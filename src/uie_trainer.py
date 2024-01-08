@@ -242,6 +242,7 @@ class UIETrainer(Seq2SeqTrainer):
                         eval_dataset=eval_dataset,
                         ignore_keys=ignore_keys_for_eval,
                         metric_key_prefix=f"eval_{eval_dataset_name}",
+                        pad_token_id=self.pad_token_id,
                     )
                     metrics.update(dataset_metrics)
             else:
@@ -643,7 +644,7 @@ class UIETrainer(Seq2SeqTrainer):
 
         if "attention_mask" in inputs:
             gen_kwargs["attention_mask"] = inputs.get("attention_mask", None)
-
+        
         if not gen_kwargs["num_beams"]:
             gen_kwargs["num_beams"] = 1
         if not gen_kwargs.get("max_new_tokens"):

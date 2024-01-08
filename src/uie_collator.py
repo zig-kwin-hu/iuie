@@ -35,6 +35,9 @@ class DataCollatorForUIE:
     num_examples: int = 0
     input_record_file: str = None
     return_loss_mask: bool = True
+    #huzikun log
+    #input_ids: list = None
+    #source_lens: list = None
 
     def __call__(self, batch, return_tensors=None):
         if return_tensors is None:
@@ -122,13 +125,34 @@ class DataCollatorForUIE:
                 )
             label_mask = labels["attention_mask"].bool()
             model_inputs["labels"] = labels["input_ids"].masked_fill(~label_mask, self.label_pad_token_id)
+            #huzikun log
+            #if self.input_ids is None:
+            #    self.input_ids = []
+            #if self.source_lens is None:
+            #    self.source_lens = []
+            #self.input_ids.append(model_inputs['input_ids'].shape[1])
+            #self.source_lens.extend([len(s) for s in sources])
+            #fout = open('temp.txt','a')
+            #for s in sources:
+            #    if len(s) >= 1808:
+            #        fout.write(s+'\n')
+            #if len(self.input_ids) >= 532:
+            #    #sort and output percentiles of input_ids
+            #    self.input_ids.sort()
+            #    self.source_lens.sort()
+            #    import numpy as np
+            #    percentiles = np.percentile(self.input_ids, range(0, 101, 1))
+            #    print('input_ids percentiles',percentiles)
+            #    percentiles = np.percentile(self.source_lens, range(0, 101, 1))
+            #    print('source_lens percentiles',percentiles)
+
 
             # prepare decoder_input_ids
             if self.model is not None:
                 decoder_input_ids = self.model.prepare_decoder_input_ids_from_labels(labels=model_inputs["labels"])
                 model_inputs["decoder_input_ids"] = decoder_input_ids
 
-            self._save_samples(model_inputs, sources, labels)
+            #self._save_samples(model_inputs, sources, labels)
         '''
         model_inputs['task'] = []
         model_inputs['dataset'] = []
@@ -136,6 +160,7 @@ class DataCollatorForUIE:
             model_inputs['task'].append(instance['Instance']['task'])
             model_inputs['dataset'].append(instance['Instance']['dataset'])
         '''
+        
         return model_inputs
 
     def decoder_call(self, batch, return_tensors):

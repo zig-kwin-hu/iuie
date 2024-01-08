@@ -1,0 +1,8 @@
+{
+    "NER": [
+        {
+            "sampling strategy": "full",
+            "dataset name": "WikiNeural_sample_20000"
+        }
+    ]
+}

@@ -1,0 +1,20 @@
+{
+    "NER": [
+        {
+            "sampling strategy": "random",
+            "dataset name": "PolyglotNER_sample_20000"
+        },
+        {
+            "sampling strategy": "random",
+            "dataset name": "Broad_Tweet_Corpus"
+        },
+        {
+            "sampling strategy": "random",
+            "dataset name": "WikiANN_en"
+        },
+        {
+            "sampling strategy": "random",
+            "dataset name": "WikiNeural_sample_20000"
+        }
+    ]
+}
