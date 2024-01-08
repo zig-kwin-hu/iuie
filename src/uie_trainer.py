@@ -478,9 +478,11 @@ class UIETrainer(Seq2SeqTrainer):
                 losses = self._nested_gather(loss.repeat(batch_size))
                 losses_host = losses if losses_host is None else torch.cat((losses_host, losses), dim=0)
             if labels is not None:
-                labels = self._pad_across_processes(labels)
+                #labels = self._pad_across_processes(labels)
+                labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
             if inputs_decode is not None:
-                inputs_decode = self._pad_across_processes(inputs_decode)
+                #inputs_decode = self._pad_across_processes(inputs_decode)
+                inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
                 inputs_decode = self._nested_gather(inputs_decode)
                 inputs_host = (
                     inputs_decode
@@ -488,7 +490,8 @@ class UIETrainer(Seq2SeqTrainer):
                     else nested_concat(inputs_host, inputs_decode, padding_index=-100)
                 )
             if logits is not None:
-                logits = self._pad_across_processes(logits)
+                #logits = self._pad_across_processes(logits)
+                logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
                 if self.preprocess_logits_for_metrics is not None:
                     logits = self.preprocess_logits_for_metrics(logits, labels)
                 logits = self._nested_gather(logits)
@@ -639,7 +642,10 @@ class UIETrainer(Seq2SeqTrainer):
             inputs["output_hidden_states"] = True
         # XXX: adapt synced_gpus for fairscale as well
         gen_kwargs = self._gen_kwargs
-        gen_kwargs["synced_gpus"] = True if is_deepspeed_zero3_enabled() else False
+        #default_synced_gpus = True if is_deepspeed_zero3_enabled() else False
+        gen_kwargs["synced_gpus"] = (
+            gen_kwargs["synced_gpus"] if gen_kwargs.get("synced_gpus") is not None else False#default_synced_gpus
+        )
 
         if "attention_mask" in inputs:
             gen_kwargs["attention_mask"] = inputs.get("attention_mask", None)
@@ -648,7 +654,10 @@ class UIETrainer(Seq2SeqTrainer):
             gen_kwargs["num_beams"] = 1
         if not gen_kwargs.get("max_new_tokens"):
             gen_kwargs["max_new_tokens"] = gen_kwargs["max_length"]
-            
+        #if "num_beams" in gen_kwargs and gen_kwargs["num_beams"] is None:
+            #gen_kwargs.pop("num_beams")
+        #if "max_length" in gen_kwargs and gen_kwargs["max_length"] is None:
+            #gen_kwargs.pop("max_length")  
         generation_config = GenerationConfig(**gen_kwargs)
 
         # prepare generation inputs
@@ -658,8 +667,20 @@ class UIETrainer(Seq2SeqTrainer):
             generation_inputs = inputs[self.model.encoder.main_input_name]
         else:
             generation_inputs = inputs[self.model.main_input_name]
-        
+        #generation_inputs = inputs.copy()
+
+        #if (
+        #    "labels" in generation_inputs
+        #    and "decoder_input_ids" in generation_inputs
+        #    and generation_inputs["labels"].shape == generation_inputs["decoder_input_ids"].shape
+        #):
+        #    generation_inputs = {
+        #        k: v for k, v in inputs.items() if k not in ("decoder_input_ids", "decoder_attention_mask")
+        #    }
+        #print('gen_kwargs',gen_kwargs)
         generated_tokens = self.model.generate(
+            #**generation_inputs,
+            #**gen_kwargs,
             input_ids=generation_inputs,
             generation_config=generation_config
         )

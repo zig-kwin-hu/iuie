@@ -4,8 +4,8 @@ epoch_map=([with_sentence_iuie_mean_of_encoder]=30 [NYT11_NYT]=10 [semval-RE]=10
 
 # declare -A TASK2DATASETS=([re]="conll04 SciERC NYT11 semval-RE ADE_corpus-1500" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="CoNLL_2003 ACE_2004 ACE_2005")
 # DONE : [ner] = ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7_sample_15000 WikiANN_en WikiNeural
-#declare -A TASK2DATASETS=([re]="ADE_corpus NYT11_sample_30000 New-York-Times-RE_sample_30000 semval-RE conll04 GIDS SciERC kbp37" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
-declare -A TASK2DATASETS=([re]="SciERC" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
+declare -A TASK2DATASETS=([re]="SciERC")
+#declare -A TASK2DATASETS=([with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
 
 set -x
 
@@ -14,15 +14,18 @@ export TRANSFORMERS_CACHE=./huggingface
 
 port=$(shuf -i25000-30000 -n1)
 
-model_name_or_path=ZWK/InstructUIE
+model_name_or_path=meta-llama/Llama-2-7b-hf
+lora_target_modules=q_proj,v_proj,up_proj,o_proj,k_proj,down_proj,gate_proj
 # model_name_or_path=google/flan-t5-xxl
+#model_name_or_path=/storage/zkhu/InstructUIE/Llama-2-7b
 
 # for TASK in re ner eet eea 
 for TASK_CONFIG in re
 do
     for DATASET_CONFIG in ${TASK2DATASETS[${TASK_CONFIG}]}
     do
-        CUDA_VISIBLE_DEVICES=0,1,2,3 python src/run_uie.py \
+        deepspeed --include localhost:0,1,2,3 --master_port $port src/run_uie.py \
+        --deepspeed ./configs/ds_configs/ds_flan_t5_z3_offload_bf16.json \
         --do_train \
         --do_eval \
         --do_predict \
@@ -37,11 +40,11 @@ do
         --instruction_strategy multiple \
         --min_negative_labels -1 \
         --min_positive_labels -1 \
-        --output_dir output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/iuie-xxl \
+        --output_dir ./output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/llama2-7b/ \
         --input_record_file iuie.record \
-        --per_device_train_batch_size 10 \
-        --per_device_eval_batch_size 12 \
-        --gradient_accumulation_steps 3 \
+        --per_device_train_batch_size 3 \
+        --per_device_eval_batch_size 3 \
+        --gradient_accumulation_steps 12 \
         --learning_rate 5e-05 \
         --num_train_epochs 10 \
         --run_name ${model_name_or_path}-${TASK_CONFIG}-${DATASET_CONFIG} \
@@ -60,41 +63,27 @@ do
         --logging_steps 10 \
         --cache_dir ./huggingface \
         --ddp_find_unused_parameters False \
-        --save_total_limit 10 \
+        --save_total_limit 2 \
         --over_sampling False \
-        --bf16 True \
+        --bf16 \
         --load_best_model_at_end False \
         --metric_for_best_model eval_f1 \
         --only_save_best_model True \
-        --lora_target_modules q,v \
+        --lora_target_modules ${lora_target_modules} \
         --lora_r 16 \
+        --use_flash_attention_2 False \
+        --none_device_map True \
         --use_test_as_eval \
         --save_lora_weights_only \
         --predict_each_dataset_with_best False \
-        --group_by_length \
         --evaluation_strategy epoch \
         --save_strategy epoch \
         #--save_strategy steps \
-        #--save_steps 15 \
+        #--save_steps 1 \
         #--evaluation_strategy steps \
-        #--eval_steps 15 \
+        #--eval_steps 1 \
+        #--group_by_length \
         #--resume_from_checkpoint /storage/zkhu/InstructUIE/output/with_sentence_iuie_mean_of_encoder_lora/0_2/iuie-xxl/checkpoint-30 \
-        #--evaluation_strategy epoch \
-        #--save_strategy epoch \
         #--overwrite_output_dir \
     done
 done
-#iuie
-#deepspeed
-    #bf16
-        #bsz 3 grad_acc 1 lora 16 iters 1140 3.60s/it 1:08:14  max 16208 MiB
-    #naive load
-        #bsz=3 grad_acc 1 lora 16 iters 1140 6.88s/it 2:00:14  max 22416 MiB
-#no deepspeed
-    #bf16
-        # bsz 3 grad_acc 1 lora 16 iters 4560 3.23it/s 27:14  max 10446 MiB
-        # bsz 6 grad_acc 1 lora 16 iters 2280 1.73it/s 20:14  max 14324 MiB
-        # bsz 6 grad_acc 3 lora 16 iters 760  1.70s/1t 20:00  max 14324 MiB
-        # bsz 10 grad_acc 3 lora 16 iters 450  2.65s/1t 19:16  max 19660 MiB
-    #naive load
-        # bsz 6 grad_acc 1 lora 16 iters 2280 1.95s/it 1:12:55  max 21036 MiB

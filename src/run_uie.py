@@ -173,6 +173,14 @@ class ModelArguments:
         default=None,
         metadata={"help": "List of lora adapter paths for LoRA MoE strategy. Only support for inference."}
     )
+    use_flash_attention_2: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to use flash attention 2."}
+    )
+    none_device_map: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to use none device map."}
+    )
 
 
 @dataclass
@@ -492,15 +500,22 @@ def main():
         task_type = TaskType.SEQ_2_SEQ_LM
         if not training_args.deepspeed:
             device_map = "auto"
-    model = model_class.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-        device_map=device_map
-    )
+    if model_args.none_device_map:
+        device_map = None
+    kwargs = {
+        "pretrained_model_name_or_path": model_args.model_name_or_path,
+        "from_tf": bool(".ckpt" in model_args.model_name_or_path),
+        "config": config,
+        "cache_dir": model_args.cache_dir,
+        "revision": model_args.model_revision,
+        "use_auth_token": True if model_args.use_auth_token else None,
+        "device_map": device_map,
+        "torch_dtype": torch.bfloat16 if training_args.bf16 else None,
+    }
+    if 'llama' in model_args.model_name_or_path.lower():
+        kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2
+    model = model_class.from_pretrained(**kwargs)
+    
     model.resize_token_embeddings(len(tokenizer))
 
     if (
@@ -725,7 +740,6 @@ def main():
 
     num_beams = data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams
     repetition_penalty = data_args.repetition_penalty
-
     trainer = UIETrainer(
         model=model,
         args=training_args,
@@ -820,14 +834,18 @@ def main():
                     model = model_class.from_pretrained(checkpoint)
                 else:
                     if not ori_model:
-                        ori_model = model_class.from_pretrained(
-                            model_args.model_name_or_path,
-                            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-                            cache_dir=model_args.cache_dir,
-                            revision=model_args.model_revision,
-                            use_auth_token=True if model_args.use_auth_token else None,
-                            device_map=device_map
-                        )
+                        kwargs = {
+                            "pretrained_model_name_or_path": model_args.model_name_or_path,
+                            "from_tf": bool(".ckpt" in model_args.model_name_or_path),
+                            "cache_dir": model_args.cache_dir,
+                            "revision": model_args.model_revision,
+                            "use_auth_token": True if model_args.use_auth_token else None,
+                            "device_map": device_map,
+                            "torch_dtype": torch.bfloat16 if training_args.bf16 else None,
+                        }
+                        if 'llama' in model_args.model_name_or_path.lower():
+                            kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2
+                        ori_model = model_class.from_pretrained(**kwargs)
                     model = PeftModel.from_pretrained(
                         ori_model,
                         checkpoint
