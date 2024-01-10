@@ -1114,8 +1114,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 sampling_strategy = dataset.get("sampling strategy", "random")
                 ds_path = os.path.join(path, task, ds_name, subset + '.json')
                 labels_path = os.path.join(path, task, ds_name, 'labels.json')
-                assert os.path.exists(ds_path)
-                assert os.path.exists(labels_path)
+                assert os.path.exists(ds_path), f"Missing dataset file {ds_path}"
+                assert os.path.exists(labels_path), f"Missing labels file {labels_path}"
                 
                 idx = -1
                 instances = []
