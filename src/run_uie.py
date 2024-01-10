@@ -909,7 +909,7 @@ def main():
                         }
                         if 'llama' in model_args.model_name_or_path.lower():
                             kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2
-                        model = model_class.from_pretrained(**kwargs)
+                        ori_model = model_class.from_pretrained(**kwargs)
                     model = PeftModel.from_pretrained(
                         ori_model,
                         checkpoint
