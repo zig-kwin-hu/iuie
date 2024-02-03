@@ -25,7 +25,7 @@ do
     for DATASET_CONFIG in ${TASK2DATASETS[${TASK_CONFIG}]}
     do
         deepspeed --include localhost:0,1,2,3 --master_port $port src/run_uie.py \
-        --deepspeed ./configs/ds_configs/ds_flan_t5_z3_offload_bf16.json \
+        --deepspeed ./configs/ds_configs/ds_flan_t5_z3_offload_bf16.json  \
         --do_train \
         --do_eval \
         --do_predict \
@@ -42,9 +42,9 @@ do
         --min_positive_labels -1 \
         --output_dir ./output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/llama2-7b/ \
         --input_record_file iuie.record \
-        --per_device_train_batch_size 3 \
-        --per_device_eval_batch_size 3 \
-        --gradient_accumulation_steps 12 \
+        --per_device_train_batch_size 5 \
+        --per_device_eval_batch_size 5 \
+        --gradient_accumulation_steps 1 \
         --learning_rate 5e-05 \
         --num_train_epochs 10 \
         --run_name ${model_name_or_path}-${TASK_CONFIG}-${DATASET_CONFIG} \
@@ -66,13 +66,14 @@ do
         --save_total_limit 2 \
         --over_sampling False \
         --bf16 \
+        --load_in_4bit True \
         --load_best_model_at_end False \
         --metric_for_best_model eval_f1 \
         --only_save_best_model True \
         --lora_target_modules ${lora_target_modules} \
         --lora_r 16 \
+        --use_lora True \
         --use_flash_attention_2 False \
-        --none_device_map True \
         --use_test_as_eval \
         --save_lora_weights_only \
         --predict_each_dataset_with_best False \

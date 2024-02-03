@@ -5,7 +5,7 @@ epoch_map=([with_sentence_iuie_mean_of_encoder]=30 [NYT11_NYT]=10 [semval-RE]=10
 # declare -A TASK2DATASETS=([re]="conll04 SciERC NYT11 semval-RE ADE_corpus-1500" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="CoNLL_2003 ACE_2004 ACE_2005")
 # DONE : [ner] = ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7_sample_15000 WikiANN_en WikiNeural
 #declare -A TASK2DATASETS=([re]="ADE_corpus NYT11_sample_30000 New-York-Times-RE_sample_30000 semval-RE conll04 GIDS SciERC kbp37" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
-declare -A TASK2DATASETS=([re]="SciERC" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
+declare -A TASK2DATASETS=([ner]="plo_all" [re]="SciERC" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
 
 set -x
 
@@ -40,9 +40,9 @@ do
         --min_positive_labels -1 \
         --output_dir output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/iuie-xxl \
         --input_record_file iuie.record \
-        --per_device_train_batch_size 3 \
+        --per_device_train_batch_size 10 \
         --per_device_eval_batch_size 3 \
-        --gradient_accumulation_steps 1 \
+        --gradient_accumulation_steps 3 \
         --learning_rate 5e-05 \
         --num_train_epochs 10 \
         --run_name ${model_name_or_path}-${TASK_CONFIG}-${DATASET_CONFIG} \
@@ -85,10 +85,19 @@ do
         #--overwrite_output_dir \
     done
 done
+#iuie
 #deepspeed
     #bf16
         #bsz 3 grad_acc 1 lora 16 iters 1140 3.60s/it 1:08:14  max 16208 MiB
     #naive load
-        #bsz=3 grad_acc=1 lora 16 iters 1140 6.88s/it 2:00:14  max 22416 MiB
+        #bsz=3 grad_acc 1 lora 16 iters 1140 6.88s/it 2:00:14  max 22416 MiB
+#no deepspeed
+    #bf16
+        # bsz 3 grad_acc 1 lora 16 iters 4560 3.23it/s 27:14  max 10446 MiB
+        # bsz 6 grad_acc 1 lora 16 iters 2280 1.73it/s 20:14  max 14324 MiB
+        # bsz 6 grad_acc 3 lora 16 iters 760  1.70s/1t 20:00  max 14324 MiB
+        # bsz 10 grad_acc 3 lora 16 iters 450  2.65s/1t 19:16  max 19660 MiB
+    #naive load
+        # bsz 6 grad_acc 1 lora 16 iters 2280 1.95s/it 1:12:55  max 21036 MiB
     
     

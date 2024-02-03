@@ -6,7 +6,7 @@ import fire
 import gradio as gr
 import torch
 import transformers
-from peft import PeftModel
+from peft_moe import PeftModel
 from transformers import GenerationConfig, AutoModelForCausalLM, LlamaTokenizer, AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration
 
 from utils.callbacks import Iteratorize, Stream

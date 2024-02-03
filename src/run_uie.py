@@ -17,7 +17,7 @@
 Fine-tuning the library models for sequence to sequence.
 """
 # You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
-
+import copy
 import logging
 import os
 import sys
@@ -41,19 +41,22 @@ from transformers import (
     HfArgumentParser,
     Seq2SeqTrainingArguments,
     set_seed, 
-    DataCollatorForSeq2Seq)
+    DataCollatorForSeq2Seq,
+    BitsAndBytesConfig)
 from transformers.file_utils import is_offline_mode
 from transformers.trainer_utils import get_last_checkpoint
 
-from peft import (
+from peft_moe import (
     LoraConfig,
     TaskType,
     get_peft_model,
     get_peft_model_state_dict,
     prepare_model_for_int8_training,
+    prepare_model_for_kbit_training,
     set_peft_model_state_dict,
     PeftModel,
     AdaLoraConfig,
+    MOELoraConfig,
 )
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
@@ -61,14 +64,16 @@ from accelerate.utils import get_balanced_memory
 from model.bloom import BloomForCausalLM_WithLoss
 from model.codegen import CodeGenForCausalLM_WithLoss
 from model.gpt_neox import GPTNeoXForCausalLM_WithLoss
+from model.t5 import T5ForConditionalGeneration_MOELoss
 # from utils.lorahub import set_lorahub_model
 
 from uie_collator import DataCollatorForUIE
 from uie_dataset import gen_cache_path
 
-from uie_trainer import UIETrainer, DenserEvalCallback, SavePeftModelCallback, SaveMetricsCallback, skip_instructions, SaveBestModelsCallback, SkipEpochEvalCallback
+from uie_trainer import UIETrainer, DenserEvalCallback, SavePeftModelCallback, SaveMetricsCallback, skip_instructions, SaveBestModelsCallback, SkipEpochEvalCallback, EarlyStoppingCallbackWithLog
 from compute_metrics import compute_f1, compute_metrics, compute_grouped_metrics
 
+import json
 # off wandb
 os.environ['WANDB_DISABLED'] = "True"
 # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -90,14 +95,28 @@ def get_best_checkpoints(output_dir):
     return paths
 
 def print_number_of_trainable_model_parameters(model):
-    trainable_model_params = 0
-    all_model_params = 0
+    r"""
+    Returns the number of trainable parameters and number of all parameters in the model.
+    """
+    trainable_params = 0
+    all_param = 0
     for _, param in model.named_parameters():
-        all_model_params += param.numel()
-        if param.requires_grad:
-            trainable_model_params += param.numel()
-    return f"trainable model parameters: {trainable_model_params}\nall model parameters: {all_model_params}\npercentage of trainable model parameters: {100 * trainable_model_params / all_model_params:.2f}%"
+        num_params = param.numel()
+        # if using DS Zero 3 and the weights are initialized empty
+        if num_params == 0 and hasattr(param, "ds_numel"):
+            num_params = param.ds_numel
 
+        # Due to the design of 4bit linear layers from bitsandbytes
+        # one needs to multiply the number of parameters by 2 to get
+        # the correct number of parameters
+        if param.__class__.__name__ == "Params4bit":
+            num_params = num_params * 2
+
+        all_param += num_params
+        if param.requires_grad:
+            trainable_params += num_params
+
+    return f"trainable model parameters: {trainable_params}\nall model parameters: {all_param}\npercentage of trainable model parameters: {100 * trainable_params / all_param:.2f}%"
 @dataclass
 class ModelArguments:
     """
@@ -175,11 +194,27 @@ class ModelArguments:
     )
     use_flash_attention_2: Optional[bool] = field(
         default=False,
-        metadata={"help": "Whether to use flash attention 2."}
+        metadata={"help": "If true, use flash attention 2."},
     )
-    none_device_map: Optional[bool] = field(
+    moe_lora: Optional[bool] = field(
         default=False,
-        metadata={"help": "Whether to use none device map."}
+        metadata={"help": "If true, use moe lora."},
+    )
+    task_num: Optional[int] = field(
+        default=1,
+        metadata={"help": "The number of tasks."},
+    )
+    expert_num: Optional[int] = field(
+        default=1,
+        metadata={"help": "The number of experts in moe lora."},
+    )
+    task_embedding_dim: Optional[int] = field(
+        default=64,
+        metadata={"help": "The embedding dim for task embedding."},
+    )
+    moe_topk: Optional[int] = field(
+        default=-1,
+        metadata={"help": "The topk for moe lora."},
     )
 
 
@@ -251,6 +286,10 @@ class DataTrainingArguments:
         default=200,
         metadata={"help": "The maximum number of instances we will consider for each validation/test task."}
     )
+    max_num_instances_per_predict_task: int = field(
+        default=None,
+        metadata={"help": "The maximum number of instances we will consider for each validation/test task."}
+    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
@@ -310,7 +349,6 @@ class DataTrainingArguments:
         default=True,
         metadata={"help": "Whether to sort prompt options in instruction."}
     )
-    
 
 
 @dataclass
@@ -368,6 +406,19 @@ class UIETrainingArguments(Seq2SeqTrainingArguments):
         default=False,
         metadata={"help": "If true, do not resume training from checkpoint."},
     )
+    load_in_4bit: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If true, use 4bit training."},
+    )
+    auto_find_best_lora_checkpoint: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If true, automatically find the best lora checkpoint."},
+    )
+    early_stopping_patience: Optional[int] = field(
+        default=0,
+        metadata={"help": "If specified, the model will do early stopping."},
+    )
+    
 
 
 def main():
@@ -432,6 +483,8 @@ def main():
         model_args.lora_moe_paths = model_args.lora_moe_paths.split(',')
 
     # Get the UIE dataset
+    print('max num instances per eval task, max num instances per predict task')
+    print(data_args.max_num_instances_per_eval_task, data_args.max_num_instances_per_predict_task)
     raw_datasets = load_dataset(
         os.path.join(CURRENT_DIR, "uie_dataset.py"),
         data_dir=data_args.data_dir,
@@ -442,6 +495,7 @@ def main():
         cache_dir=data_cache_dir,  # for debug, change dataset size, otherwise open it
         max_num_instances_per_task=data_args.max_num_instances_per_task,
         max_num_instances_per_eval_task=data_args.max_num_instances_per_eval_task,
+        max_num_instances_per_predict_task=data_args.max_num_instances_per_predict_task,
         num_examples=data_args.num_examples,
         over_sampling=data_args.over_sampling,
         min_negative_labels=data_args.min_negative_labels,
@@ -472,6 +526,7 @@ def main():
     )
     
     device_map = None
+    bnb_config = None
     if 'bloom' in model_args.model_name_or_path.lower():
         model_class = BloomForCausalLM_WithLoss
         if tokenizer.pad_token is None:
@@ -494,14 +549,22 @@ def main():
         tokenizer.pad_token = tokenizer.unk_token
         tokenizer.padding_side = 'left'
         task_type = TaskType.CAUSAL_LM
-        device_map = "auto"
+        if not training_args.deepspeed:
+            device_map = "auto"
+        if training_args.load_in_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
+            )
+    elif any([k in model_args.model_name_or_path.lower() for k in ['t5', 'instructuie']]):
+        model_class = T5ForConditionalGeneration_MOELoss
+        task_type = TaskType.SEQ_2_SEQ_LM
+        if not training_args.deepspeed:
+            device_map = "auto"
     else:
         model_class = AutoModelForSeq2SeqLM
         task_type = TaskType.SEQ_2_SEQ_LM
         if not training_args.deepspeed:
             device_map = "auto"
-    if model_args.none_device_map:
-        device_map = None
     kwargs = {
         "pretrained_model_name_or_path": model_args.model_name_or_path,
         "from_tf": bool(".ckpt" in model_args.model_name_or_path),
@@ -511,13 +574,14 @@ def main():
         "use_auth_token": True if model_args.use_auth_token else None,
         "device_map": device_map,
         "torch_dtype": torch.bfloat16 if training_args.bf16 else None,
+        "quantization_config": bnb_config,
     }
     if 'llama' in model_args.model_name_or_path.lower():
         kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2
     model = model_class.from_pretrained(**kwargs)
-    
     model.resize_token_embeddings(len(tokenizer))
-
+    if training_args.load_in_4bit:
+        model = prepare_model_for_kbit_training(model)
     if (
             hasattr(model.config, "max_position_embeddings")
             and model.config.max_position_embeddings < data_args.max_source_length
@@ -544,7 +608,20 @@ def main():
         )
 
     if training_args.use_lora or model_args.use_ada_lora:
-        if not model_args.use_ada_lora:
+        if model_args.moe_lora:
+            config = MOELoraConfig(
+                r=model_args.lora_r,
+                lora_alpha=model_args.lora_alpha,
+                target_modules=model_args.lora_target_modules,
+                lora_dropout=model_args.lora_dropout,
+                bias="none",
+                task_type=task_type,
+                expert_num=model_args.expert_num,
+                task_num=model_args.task_num,
+                task_embedding_dim=model_args.task_embedding_dim,
+                moe_topk=model_args.moe_topk,
+            )
+        elif not model_args.use_ada_lora:
             config = LoraConfig(
                 r=model_args.lora_r,
                 lora_alpha=model_args.lora_alpha,
@@ -606,7 +683,30 @@ def main():
                     set_peft_model_state_dict(model, adapters_weights)
                 else:
                     print(f"LoRA Checkpoint {checkpoint_name} not found")
-        
+        elif training_args.auto_find_best_lora_checkpoint:
+            with open(os.path.join(training_args.output_dir, f"eval_metrics_each_epoch_use_test_as_eval.jsonl"), "r") as fin:
+                lines = fin.readlines()
+                js = [json.loads(line) for line in lines]
+                best_f1 = 0
+                best_global_step = None
+                for j in js:
+                    if j["eval"]["eval_f1"] > best_f1:
+                        best_f1 = j["eval"]["eval_f1"]
+                        best_global_step = j["eval"]["eval_global_step"]
+                if best_global_step is not None:
+                    checkpoint_name_ = os.path.join(training_args.output_dir, f"checkpoint-{best_global_step}")
+                    checkpoint_name = os.path.join(checkpoint_name_, "pytorch_model.bin")
+                    if not os.path.exists(checkpoint_name):
+                        checkpoint_name = os.path.join(
+                            checkpoint_name_, "adapter_model.bin"
+                        )  # only LoRA model - LoRA config above has to fit
+                        if os.path.exists(checkpoint_name):
+                            print(f"Restarting from LoRA Adapter {checkpoint_name}")
+                            adapters_weights = torch.load(checkpoint_name)
+                            set_peft_model_state_dict(model, adapters_weights)
+                        else:
+                            print(f"LoRA Checkpoint {checkpoint_name} not found")
+
         model.is_parallelizable = True
         model.model_parallel = True
         model.print_trainable_parameters()
@@ -641,7 +741,7 @@ def main():
         if data_args.max_predict_samples is not None:
             predict_dataset = predict_dataset.select(range(data_args.max_predict_samples))
     if training_args.use_test_as_eval:
-        eval_dataset = predict_dataset
+        eval_dataset = copy.deepcopy(predict_dataset)
     # Data collator
     label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
     data_collator = DataCollatorForUIE(
@@ -731,6 +831,8 @@ def main():
         assert training_args.evaluation_strategy == 'epoch', "skip_epoch_eval only works with epoch evaluation strategy"
         assert training_args.save_strategy == 'epoch', "skip_epoch_eval only works with epoch save strategy"
         callbacks.append(SkipEpochEvalCallback)
+    if training_args.early_stopping_patience > 0:
+        callbacks.append(EarlyStoppingCallbackWithLog(early_stopping_patience=training_args.early_stopping_patience))
     
     max_new_tokens = (
         training_args.generation_max_length
@@ -788,13 +890,18 @@ def main():
             trained_epoch_num = int(trained_steps / training_steps_per_epoch)
             #trainer.args.num_train_epochs = training_args.num_train_epochs - trained_epoch_num
             #print('left num_train_epochs: ', trainer.args.num_train_epochs)
-        print('resume_from_checkpoint: ', training_args.resume_from_checkpoint)
+        print('last_checkpoint: ', last_checkpoint)
+
+        from collections import Counter
+        c = Counter(p.dtype for p in model.parameters()).most_common()
+        print('model parameters dtype: ', c)
         if not training_args.use_lora and not training_args.no_resume_training:
+            print('resume training from checkpoint: ', checkpoint)
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
         else:
             train_result = trainer.train()
-        if not training_args.no_saving:
-            trainer.save_model()  # Saves the tokenizer too for easy upload
+        #if not training_args.no_saving:
+            #trainer.save_model()  # Saves the tokenizer too for easy upload
 
         metrics = train_result.metrics
         max_train_samples = (
@@ -837,11 +944,13 @@ def main():
                         kwargs = {
                             "pretrained_model_name_or_path": model_args.model_name_or_path,
                             "from_tf": bool(".ckpt" in model_args.model_name_or_path),
+                            "config": config,
                             "cache_dir": model_args.cache_dir,
                             "revision": model_args.model_revision,
                             "use_auth_token": True if model_args.use_auth_token else None,
                             "device_map": device_map,
                             "torch_dtype": torch.bfloat16 if training_args.bf16 else None,
+                            "quantization_config": bnb_config,
                         }
                         if 'llama' in model_args.model_name_or_path.lower():
                             kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2

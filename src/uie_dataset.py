@@ -37,7 +37,7 @@ AUX_PROB = 0.3
 def gen_cache_path(cache_dir, data_args):
     hash_str = data_args.data_dir + data_args.task_config_dir + \
                data_args.instruction_file + data_args.instruction_strategy + \
-               str(data_args.max_num_instances_per_task) + str(data_args.max_num_instances_per_eval_task)
+               str(data_args.max_num_instances_per_task) + str(data_args.max_num_instances_per_eval_task) + str(data_args.max_num_instances_per_predict_task)
     hash_obj = md5(hash_str.encode("utf-8"))
     hash_id = hash_obj.hexdigest()
     cache_path = os.path.join(cache_dir, str(hash_id))
@@ -66,6 +66,7 @@ class UIEConfig(datasets.BuilderConfig):
          Support two sampling strategies: 'random' indicates random sampling, while 'full' means to return all samples.
         max_num_instances_per_task: max training sample size of each task
         max_num_instances_per_eval_task: max eval sample size of each task
+        max_num_instances_per_predict_task: max predict sample size of each task
     """
 
     def __init__(
@@ -79,6 +80,7 @@ class UIEConfig(datasets.BuilderConfig):
             num_examples=None,
             max_num_instances_per_task=None,
             max_num_instances_per_eval_task=None,
+            max_num_instances_per_predict_task=None,
             over_sampling=None,
             min_negative_labels=-1,
             min_positive_labels=-1,
@@ -97,6 +99,7 @@ class UIEConfig(datasets.BuilderConfig):
         self.instruction_strategy = instruction_strategy
         self.max_num_instances_per_task = max_num_instances_per_task
         self.max_num_instances_per_eval_task = max_num_instances_per_eval_task
+        self.max_num_instances_per_predict_task = max_num_instances_per_predict_task
         self.min_negative_labels = min_negative_labels
         self.min_positive_labels = min_positive_labels
         self.ordered_prompt = ordered_prompt
@@ -252,7 +255,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 gen_kwargs={
                     "path": split_dir,
                     "task_config": task_configs['test'],
-                    "max_num_instances_per_task": None,  # default load total test samples to test
+                    "max_num_instances_per_task": self.config.max_num_instances_per_predict_task,
                     "subset": "test"
                 }),
         ]
@@ -291,7 +294,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
     def _sampling_dataset(self, instances, sampling_strategy, max_num_instances):
         print("Sampling strategy: {}".format(sampling_strategy))
         print('Total instances: {}'.format(len(instances)))
-        if sampling_strategy == 'random' and max_num_instances is not None and max_num_instances >= 0:
+        if max_num_instances is not None and max_num_instances >= 0 \
+            and len(instances) > max_num_instances and max_num_instances is not None: #and sampling_strategy == 'random'
             instances = instances[:max_num_instances]
         if (max_num_instances!=None) and self.config.over_sampling and (len(instances) < max_num_instances):
             origin_instances = instances.copy()
@@ -348,6 +352,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         positive_set = self.sample_positive(positive, self.config.min_positive_labels)
         
         labels = negative_set + positive_set
+        labels = list(set(labels))
         if self.config.ordered_prompt:
             labels.sort()
         else:
@@ -508,6 +513,9 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
     
     def load_NER_dataset(self, dataset_path, labels_path, dataset_name, sampling_strategy, max_num_instances, subset):
         instances, labels = self._load_dataset(dataset_path, labels_path)
+        add_other = False#subset == "train"
+        if add_other:
+            labels.append('other')
 
         sample_template = {"Task": "NER", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
@@ -519,10 +527,6 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
             
             positive_types = list(set(ev['type'] for ev in instance['entities']))
             label_set = []
-            
-            add_other = subset == "train"
-            if add_other:
-                labels.append('other')
                 
             if positive_types and (add_other or subset == "train") :
                 dum_pos_types = deepcopy(positive_types)
@@ -536,7 +540,6 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
             else:
                 labels_str = ", ".join(labels)
                 label_set.append((labels_str, positive_types))
-            
             
             for labels_str, positive_set in label_set:
                 instruction = self._get_prompt(instruction, labels_str)
@@ -1111,8 +1114,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 sampling_strategy = dataset.get("sampling strategy", "random")
                 ds_path = os.path.join(path, task, ds_name, subset + '.json')
                 labels_path = os.path.join(path, task, ds_name, 'labels.json')
-                assert os.path.exists(ds_path)
-                assert os.path.exists(labels_path)
+                assert os.path.exists(ds_path), f"Missing dataset file {ds_path}"
+                assert os.path.exists(labels_path), f"Missing labels file {labels_path}"
                 
                 idx = -1
                 instances = []

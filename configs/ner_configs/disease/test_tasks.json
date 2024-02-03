@@ -1,0 +1,16 @@
+{
+    "NER": [
+        {
+            "sampling strategy": "full",
+            "dataset name": "MultiNERD_sample_20000"
+        },
+        {
+            "sampling strategy": "full",
+            "dataset name": "bc5cdr"
+        },
+        {
+            "sampling strategy": "full",
+            "dataset name": "ncbi"
+        }
+    ]
+}
