@@ -106,5 +106,5 @@ class MOELinearB(nn.Module):
         outputs = F.linear(x, self.loraB_block_diag)#there is no need to consider the fan_in_fan_out, because the weight is generated locally
         shape = outputs.shape[:-1] + (self.expert_num, self.out_features)
         outputs = outputs.reshape(shape)
-
+        
         return outputs

@@ -64,7 +64,7 @@ from accelerate.utils import get_balanced_memory
 from model.bloom import BloomForCausalLM_WithLoss
 from model.codegen import CodeGenForCausalLM_WithLoss
 from model.gpt_neox import GPTNeoXForCausalLM_WithLoss
-from model.t5 import T5ForConditionalGeneration_MOELoss
+from model.t5 import MOET5ForConditionalGeneration
 # from utils.lorahub import set_lorahub_model
 
 from uie_collator import DataCollatorForUIE
@@ -555,8 +555,8 @@ def main():
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
             )
-    elif any([k in model_args.model_name_or_path.lower() for k in ['t5', 'instructuie']]):
-        model_class = T5ForConditionalGeneration_MOELoss
+    elif any([k in model_args.model_name_or_path.lower() for k in ['t5', 'instructuie']]) and model_args.moe_lora:
+        model_class = MOET5ForConditionalGeneration
         task_type = TaskType.SEQ_2_SEQ_LM
         if not training_args.deepspeed:
             device_map = "auto"

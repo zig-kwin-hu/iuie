@@ -5,7 +5,7 @@ epoch_map=([with_sentence_iuie_mean_of_encoder]=30 [NYT11_NYT]=10 [semval-RE]=10
 # declare -A TASK2DATASETS=([re]="conll04 SciERC NYT11 semval-RE ADE_corpus-1500" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="CoNLL_2003 ACE_2004 ACE_2005")
 # DONE : [ner] = ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7_sample_15000 WikiANN_en WikiNeural
 #declare -A TASK2DATASETS=([re]="ADE_corpus NYT11_sample_30000 New-York-Times-RE_sample_30000 semval-RE conll04 GIDS SciERC kbp37" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
-declare -A TASK2DATASETS=([ner]="ncbi" [re]="ADE_corpus" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
+declare -A TASK2DATASETS=([ner]="plo_all" [re]="ADE_corpus" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
 
 set -x
 
@@ -15,7 +15,7 @@ export TRANSFORMERS_CACHE=./huggingface
 port=$(shuf -i25000-30000 -n1)
 
 #model_name_or_path=ZWK/InstructUIE
-expert_num=1
+expert_num=4
 lora_r=16
 lora_alpha=16
 add_name=True
@@ -23,8 +23,9 @@ moe_topk=1
 moe_lora=True
 #--per_device_train_batch_size 10 \
 #--gradient_accumulation_steps 3 \
-#model_name_or_path=google/flan-t5-xl
-model_name_or_path=ZWK/InstructUIE
+model_name_or_path=google/flan-t5-xl
+#model_name_or_path=ZWK/InstructUIE
+name_after_slash=$(echo "$model_name_or_path" | cut -d'/' -f2)
 
 # for TASK in re ner eet eea 
 for TASK_CONFIG in ner
@@ -38,18 +39,18 @@ do
         fi
         if [[ "${add_name}" == "True" ]]; then
             if [[ "${moe_lora}" == "True" ]]; then
-                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/iuie_addname_${lora_r}"
+                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}_${expert_num}_${moe_topk}"
             else
-                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/iuie_addname_${lora_r}"
+                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}"
             fi
         else
             if [[ "${moe_lora}" == "True" ]]; then
-                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/iuie_${lora_r}"
+                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${name_after_slash}_${lora_r}_${expert_num}_${moe_topk}"
             else
-                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/iuie_${lora_r}"
+                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_${lora_r}"
             fi
         fi
-        CUDA_VISIBLE_DEVICES=0,1 python src/run_uie.py \
+        CUDA_VISIBLE_DEVICES=0,2 python src/run_uie.py \
         --do_train \
         --do_eval \
         --do_predict \
@@ -66,9 +67,9 @@ do
         --min_positive_labels -1 \
         --output_dir "${output_dir}" \
         --input_record_file iuie.record \
-        --per_device_train_batch_size 3 \
+        --per_device_train_batch_size 2 \
         --per_device_eval_batch_size 16 \
-        --gradient_accumulation_steps 10 \
+        --gradient_accumulation_steps 16 \
         --learning_rate 5e-05 \
         --num_train_epochs 10 \
         --run_name ${model_name_or_path}-${TASK_CONFIG}-${DATASET_CONFIG} \
@@ -93,7 +94,7 @@ do
         --bf16 True \
         --load_best_model_at_end True \
         --metric_for_best_model eval_f1 \
-        --early_stopping_patience 5 \
+        --early_stopping_patience 10 \
         --only_save_best_model True \
         --lora_target_modules q,v \
         --lora_r ${lora_r} \
