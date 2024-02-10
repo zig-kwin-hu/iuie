@@ -23,7 +23,7 @@ import torch.nn.functional as F
 
 from peft_moe.tuners.tuners_utils import BaseTunerLayer
 from peft_moe.utils.other import transpose
-from peft_moe.tuners.moelora.moe_modules import Gate, MOELinearA, MOELinearB, Expert
+from peft_moe.tuners.moelora.moe_modules import TopKGate, MOELinearA, MOELinearB, Expert
 
 
 class MOELoraLayer(BaseTunerLayer):
@@ -211,6 +211,10 @@ class MOELinear(nn.Linear, MOELoraLayer):
         self.task_num = kwargs.pop("task_num", None)
         self.task_embedding_dim = kwargs.pop("task_embedding_dim", None)
         self.moe_topk = kwargs.pop("moe_topk", None)
+        self.gate_type = kwargs.pop("gate_type", None)
+        self.gate_loss_type = kwargs.pop("gate_loss_type", None)
+        self.add_noise = kwargs.pop("add_noise", None)
+        self.regularized = kwargs.pop("regularized", None)
         # this gets the init from nn.Linear's super perspective, i.e.
         # nn.Module.__init__, which should always be called
         super(nn.Linear, self).__init__()
@@ -223,7 +227,12 @@ class MOELinear(nn.Linear, MOELoraLayer):
         self.lora_task_embedding = nn.ModuleDict({})
         self.lora_gate = nn.ModuleDict({})
         self.lora_task_embedding.update(nn.ModuleDict({adapter_name: nn.Embedding(self.task_num+1, self.task_embedding_dim)}))
-        self.lora_gate.update(nn.ModuleDict({adapter_name: Gate(self.in_features, self.expert_num, self.moe_topk)}))
+        if self.gate_type in ['TopKGate']:
+            selected_gate_class = {'TopKGate': TopKGate}[self.gate_type]
+        else:
+            raise ValueError(f"Gate type {self.gate_type} not supported")
+        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.in_features, self.expert_num, self.moe_topk, self.gate_loss_type, self.add_noise,\
+                                                                               regularized=self.regularized)}))
         
         # Freezing the pre-trained weight matrix
 
@@ -325,6 +334,7 @@ class MOELinear(nn.Linear, MOELoraLayer):
             result = self._linear(x)
         else:
             result = self._linear(x)
+            assert len(self.active_adapters) == 1, "Only one adapter is supported for now"
             for active_adapter in self.active_adapters:
                 if active_adapter not in self.lora_A.keys():
                     continue
@@ -334,14 +344,181 @@ class MOELinear(nn.Linear, MOELoraLayer):
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.loraA[0].weight.dtype)
                 moe_output = lora_B(lora_A(dropout(x)))# (batch_size, seq_len, expert_num, out_features)
-                expert_weight, gate_logits = self.lora_gate[active_adapter](x)
+                gate_output = self.lora_gate[active_adapter](x)
+                expert_weight = gate_output['scores']
                 weighted_moe_output = torch.sum(moe_output * expert_weight.unsqueeze(-1), dim=-2) # (batch_size, seq_len, out_features)
                 result += weighted_moe_output * scaling
-                
-
+                gate_output['lora_scaling'] = scaling
         result = result.to(previous_dtype)
-        return result
+        return result, gate_output
 
+class MOELinearWithUniversal(nn.Linear, MOELoraLayer):
+    # Lora implemented in a dense layer
+    def __init__(
+        self,
+        adapter_name: str,
+        in_features: int,
+        out_features: int,
+        r: int = 0,
+        lora_alpha: int = 1,
+        lora_dropout: float = 0.0,
+        fan_in_fan_out: bool = False,  # Set this to True if the layer to replace stores weight like (fan_in, fan_out)
+        is_target_conv_1d_layer: bool = False,
+        **kwargs,
+    ) -> None:
+        init_lora_weights = kwargs.pop("init_lora_weights", True)
+        self.expert_num = kwargs.pop("expert_num", None)
+        self.task_num = kwargs.pop("task_num", None)
+        self.task_embedding_dim = kwargs.pop("task_embedding_dim", None)
+        self.moe_topk = kwargs.pop("moe_topk", None)
+        self.gate_type = kwargs.pop("gate_type", None)
+        self.gate_loss_type = kwargs.pop("gate_loss_type", None)
+        self.add_noise = kwargs.pop("add_noise", None)
+        self.regularized = kwargs.pop("regularized", None)
+        assert not self.regularized, "Universal expert is not supported for regularized gate"
+        if self.expert_num is not None:
+            self.expert_num = self.expert_num + 1# add one for universal expert
+        # this gets the init from nn.Linear's super perspective, i.e.
+        # nn.Module.__init__, which should always be called
+        super(nn.Linear, self).__init__()
+        
+        # Note that we don't use self._init_empty_weights() for Linear because it is a bit slower and the benefit of
+        # added robustness is not big enough for Linear.
+
+        MOELoraLayer.__init__(self, in_features=in_features, out_features=out_features, expert_num=self.expert_num)
+        # init the Gate network
+        self.lora_task_embedding = nn.ModuleDict({})
+        self.lora_gate = nn.ModuleDict({})
+        self.lora_task_embedding.update(nn.ModuleDict({adapter_name: nn.Embedding(self.task_num+1, self.task_embedding_dim)}))
+        if self.gate_type in ['TopKGate']:
+            selected_gate_class = {'TopKGate': TopKGate}[self.gate_type]
+        else:
+            raise ValueError(f"Gate type {self.gate_type} not supported")
+        #minus one because the universal expert is not included in the gate
+        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.in_features, self.expert_num-1, self.moe_topk, self.gate_loss_type, self.add_noise, \
+                                                                               regularized=self.regularized)}))
+        
+        # Freezing the pre-trained weight matrix
+
+        self.fan_in_fan_out = fan_in_fan_out
+
+        self.update_layer(adapter_name, r, lora_alpha, lora_dropout, init_lora_weights)
+        self.is_target_conv_1d_layer = is_target_conv_1d_layer
+        self.set_adapter(adapter_name)
+
+    def merge(self, safe_merge: bool = False) -> None:
+        raise NotImplementedError("merge not implemented for MOELinear")
+        """
+        Merge the active adapter weights into the base weights
+
+        Args:
+            safe_merge (`bool`, *optional*):
+                If True, the merge operation will be performed in a copy of the original weights and check for NaNs
+                before merging the weights. This is useful if you want to check if the merge operation will produce
+                NaNs. Defaults to `False`.
+        """
+        if self.merged:
+            warnings.warn(
+                f"Already following adapters were merged {','.join(self.merged_adapters)}. "
+                f"You are now additionally merging {','.join(self.active_adapters)}."
+            )
+        for active_adapter in self.active_adapters:
+            if active_adapter in self.lora_A.keys():
+                if safe_merge:
+                    # Note that safe_merge will be slower than the normal merge
+                    # because of the copy operation.
+                    orig_weights = self.weight.data.clone()
+                    orig_weights += self.get_delta_weight(active_adapter)
+
+                    if not torch.isfinite(orig_weights).all():
+                        raise ValueError(
+                            f"NaNs detected in the merged weights. The adapter {active_adapter} seems to be broken"
+                        )
+
+                    self.weight.data = orig_weights
+                else:
+                    self.weight.data += self.get_delta_weight(active_adapter)
+                self.merged_adapters.append(active_adapter)
+
+    def unmerge(self) -> None:
+        raise NotImplementedError("unmerge not implemented for MOELinear")
+        if not self.merged:
+            warnings.warn("Already unmerged. Nothing to do.")
+            return
+        while len(self.merged_adapters) > 0:
+            active_adapter = self.merged_adapters.pop()
+            if active_adapter in self.lora_A.keys():
+                self.weight.data -= self.get_delta_weight(active_adapter)
+
+    def get_delta_weight(self, adapter) -> torch.Tensor:
+        """
+        Compute the delta weight for the given adapter.
+
+        Args:
+            adapter (str):
+                The name of the adapter for which the delta weight should be computed.
+        """
+        device = self.lora_B[adapter].weight.device
+        dtype = self.lora_B[adapter].weight.dtype
+
+        # In case users wants to merge the adapter weights that are in
+        # float16 while being on CPU, we need to cast the weights to float32, perform the merge and then cast back to
+        # float16 because the `@` and matmul operation in general is not supported in torch + cpu + fp16.
+        cast_to_fp32 = device.type == "cpu" and dtype == torch.float16
+
+        weight_A = self.lora_A[adapter].weight
+        weight_B = self.lora_B[adapter].weight
+
+        if cast_to_fp32:
+            weight_A = weight_A.float()
+            weight_B = weight_B.float()
+
+        output_tensor = transpose(weight_B @ weight_A, self.fan_in_fan_out) * self.scaling[adapter]
+
+        if cast_to_fp32:
+            output_tensor = output_tensor.to(dtype=dtype)
+
+            # cast back the weights
+            self.lora_A[adapter].weight.data = weight_A.to(dtype)
+            self.lora_B[adapter].weight.data = weight_B.to(dtype)
+
+        return output_tensor
+
+    def _linear(self, input: torch.Tensor) -> torch.Tensor:
+        return F.linear(input, transpose(self.weight, self.fan_in_fan_out), bias=self.bias)
+
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        previous_dtype = x.dtype
+
+        if self.disable_adapters:
+            if self.merged:
+                self.unmerge()
+            result = self._linear(x)
+        elif self.merged:
+            result = self._linear(x)
+        else:
+            result = self._linear(x)
+            assert len(self.active_adapters) == 1, "Only one adapter is supported for now"
+            for active_adapter in self.active_adapters:
+                if active_adapter not in self.lora_A.keys():
+                    continue
+                lora_A = self.lora_A[active_adapter]
+                lora_B = self.lora_B[active_adapter]
+                dropout = self.lora_dropout[active_adapter]
+                scaling = self.scaling[active_adapter]
+                x = x.to(lora_A.loraA[0].weight.dtype)
+                moe_output = lora_B(lora_A(dropout(x)))# (batch_size, seq_len, expert_num+1, out_features)
+                non_universal_moe_output = moe_output[:, :, 1:, :]
+                universal_moe_output = moe_output[:, :, 0, :]
+                gate_output = self.lora_gate[active_adapter](x)
+                expert_weight = gate_output['scores']# (batch_size, seq_len, expert_num) 
+                weighted_non_universal_moe_output = torch.sum(non_universal_moe_output * expert_weight.unsqueeze(-1), dim=-2) # (batch_size, seq_len, out_features)
+                weighted_universal_moe_output = universal_moe_output * (1 - torch.sum(expert_weight, dim=-1, keepdim=True))
+                weighted_moe_output = weighted_non_universal_moe_output + weighted_universal_moe_output
+                result += weighted_moe_output * scaling
+                gate_output['lora_scaling'] = scaling
+        result = result.to(previous_dtype)
+        return result, gate_output
 
 class MOEEmbedding(nn.Embedding, MOELoraLayer):
     # LoRA implemented in a Embedding layer

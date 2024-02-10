@@ -57,6 +57,7 @@ from transformers import EarlyStoppingCallback
 
 from transformers.trainer_pt_utils import nested_truncate, nested_concat, nested_numpify
 from transformers.deepspeed import deepspeed_init, is_deepspeed_zero3_enabled
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES, MODEL_MAPPING_NAMES
 from peft_moe import get_peft_model_state_dict
 
 from uie_collator import SUPPORTED_DECODER_MODELS, check_model
@@ -778,11 +779,12 @@ class UIETrainer(Seq2SeqTrainer):
         #        k: v for k, v in inputs.items() if k not in ("decoder_input_ids", "decoder_attention_mask")
         #    }
         #print('gen_kwargs',gen_kwargs)
+        #"/home/zkhu142/anaconda3/envs/llama/lib/python3.8/site-packages/transformers/generation/utils.py", line 1297, 
         generated_tokens = self.model.generate(
             #**generation_inputs,
             #**gen_kwargs,
             input_ids=generation_inputs,
-            generation_config=generation_config
+            generation_config=generation_config,
         )
 
         bs, source_len = inputs['input_ids'].shape
@@ -1161,3 +1163,35 @@ class UIETrainer(Seq2SeqTrainer):
                 f"Could not locate the best model at {best_model_path}, if you are running a distributed training "
                 "on multiple nodes, you should activate `--save_on_each_node`."
             )
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        if self.label_smoother is not None and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+        outputs = model(**inputs)
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        if labels is not None:
+            if unwrap_model(model)._get_name() in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+                loss = self.label_smoother(outputs, labels, shift_labels=True)
+            else:
+                loss = self.label_smoother(outputs, labels)
+        else:
+            if isinstance(outputs, dict) and "loss" not in outputs:
+                raise ValueError(
+                    "The model did not return a loss from the inputs, only the following keys: "
+                    f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
+                )
+            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+        if 'gate_loss' in outputs and outputs['gate_loss'] is not None:
+            loss = loss + outputs['gate_loss']*self.args.gate_loss_weight
+        return (loss, outputs) if return_outputs else loss

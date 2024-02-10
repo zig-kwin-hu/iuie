@@ -216,6 +216,26 @@ class ModelArguments:
         default=-1,
         metadata={"help": "The topk for moe lora."},
     )
+    gate_type: Optional[str] = field(
+        default="TopKGate",
+        metadata={"help": "The gate type for moe lora."},
+    )
+    gate_loss_type: Optional[str] = field(
+        default="no_loss",
+        metadata={"help": "The gate loss type for moe lora."},
+    )
+    add_noise: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to add noise to the gate output."},
+    )
+    regularized: Optional[bool] = field(
+        default=True,
+        metadata={"help": "Whether to regularize the gate output."},
+    )
+    with_universal: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to add universal expert."},
+    )
 
 
 @dataclass
@@ -417,6 +437,10 @@ class UIETrainingArguments(Seq2SeqTrainingArguments):
     early_stopping_patience: Optional[int] = field(
         default=0,
         metadata={"help": "If specified, the model will do early stopping."},
+    )
+    gate_loss_weight: Optional[float] = field(
+        default=1e-2,
+        metadata={"help": "The weight for gate loss."},
     )
     
 
@@ -620,6 +644,11 @@ def main():
                 task_num=model_args.task_num,
                 task_embedding_dim=model_args.task_embedding_dim,
                 moe_topk=model_args.moe_topk,
+                gate_type=model_args.gate_type,
+                gate_loss_type=model_args.gate_loss_type,
+                add_noise=model_args.add_noise,
+                regularized=model_args.regularized,
+                with_universal=model_args.with_universal,
             )
         elif not model_args.use_ada_lora:
             config = LoraConfig(

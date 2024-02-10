@@ -3,33 +3,60 @@ import torch.nn as nn
 import torch.nn.functional as F
 def transpose(weight, fan_in_fan_out):
     return weight.T if fan_in_fan_out else weight
-class Gate(nn.Module):
+def _router_z_loss(logits):
+    bsz, seq_len, _ = logits.size()
+    log_z = torch.logsumexp(logits, dim=-1, keepdim=False)
+    z_loss = log_z**2
+    #z_loss = z_loss.sum() / (bsz*seq_len)
+    return z_loss
+class TopKGate(nn.Module):
 
-    def __init__(self, input_size, expert_num, moe_topk: int = -1):
+    def __init__(self, input_size, expert_num, moe_topk: int = -1, loss_type=None, add_noise=False, regularized=True):
 
         super().__init__()
         # 使用embedding来代替线性层
         self.GateL = nn.Linear(input_size, expert_num, bias=False)
         self.act = nn.Softmax(dim=-1)    # 第0维为batch size
         self.moe_topk = moe_topk
+        self.expert_num = expert_num
+        if loss_type == 'router_z':
+            self.loss_function = _router_z_loss
+        elif loss_type == 'no_loss':
+            self.loss_function = lambda x: 0.
+        elif loss_type is not None:
+            raise ValueError(f'Unknown loss type: {loss_type}')
+        else:
+            self.loss_function = lambda x: 0.
+        self.add_noise = add_noise
+        self.regularized = regularized
+            
     
     def forward(self, x):
 
         logits = self.GateL(x)
-        y = self.act(logits)
+        
+        if self.add_noise:
+            logits = logits + torch.randn_like(logits)*((1/self.expert_num)**0.5)
+
+        
         if self.moe_topk is not None and self.moe_topk > 0:
             #get the topk indices and generate a mask with only topk indices set to 1, then multiply with the gate output
-            topk_indices = torch.topk(y, self.moe_topk, dim=-1)[1]
-            mask = torch.zeros_like(y)
-            mask.scatter_(dim=-1, index=topk_indices, value=1)
-            y = y * mask
-        return y, logits
-    def _router_z_loss(self, logits):
-        bsz, seq_len, _ = logits.size()
-        log_z = torch.logsumexp(logits, dim=1, keepdim=True)
-        z_loss = log_z**2
-        z_loss = z_loss.sum() / (bsz*seq_len)
-        return z_loss
+            topk_logits, topk_indices = torch.topk(logits, min(self.moe_topk+1, self.expert_num), dim=-1)#batch_size, seq_len, topk+1
+            topk_logits = topk_logits[:, :, :self.moe_topk]
+            topk_indices = topk_indices[:, :, :self.moe_topk]
+            zeros = torch.zeros_like(logits, requires_grad=True, device=logits.device)
+            if self.regularized:
+                topk_scores = self.act(topk_logits.float()).to(logits.dtype)
+            else:
+                scores = self.act(logits.float()).to(logits.dtype)
+                topk_scores = torch.gather(input=scores, dim=-1, index=topk_indices)
+            scores_filtered = zeros.scatter(dim=-1, index=topk_indices, src=topk_scores)
+        else:
+            scores_filtered = self.act(logits.float()).to(logits.dtype)
+        loss = None
+        loss = self.loss_function(logits)
+        return {'logits': logits, 'scores': scores_filtered, 'loss':loss}
+
 class Expert(nn.Module):
 
     def __init__(self, in_features, out_features, bias=False):

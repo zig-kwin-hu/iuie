@@ -21,6 +21,12 @@ lora_alpha=16
 add_name=True
 moe_topk=1
 moe_lora=True
+gate_type=TopKGate
+gate_loss_type=router_z
+gate_loss_weight=1e-2
+add_noise=True
+regularized=False
+with_universal=True
 #--per_device_train_batch_size 10 \
 #--gradient_accumulation_steps 3 \
 model_name_or_path=google/flan-t5-xl
@@ -39,18 +45,18 @@ do
         fi
         if [[ "${add_name}" == "True" ]]; then
             if [[ "${moe_lora}" == "True" ]]; then
-                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}_${expert_num}_${moe_topk}"
+                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}_${expert_num}_${moe_topk}_${gate_loss_type}_${add_noise}_${regularized}_${with_universal}"
             else
                 output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}"
             fi
         else
             if [[ "${moe_lora}" == "True" ]]; then
-                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${name_after_slash}_${lora_r}_${expert_num}_${moe_topk}"
+                output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${name_after_slash}_${lora_r}_${expert_num}_${moe_topk}_${gate_loss_type}_${add_noise}_${regularized}_${with_universal}"
             else
                 output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_${lora_r}"
             fi
         fi
-        CUDA_VISIBLE_DEVICES=0,2 python src/run_uie.py \
+        CUDA_VISIBLE_DEVICES=0 python src/run_uie.py \
         --do_train \
         --do_eval \
         --do_predict \
@@ -67,9 +73,9 @@ do
         --min_positive_labels -1 \
         --output_dir "${output_dir}" \
         --input_record_file iuie.record \
-        --per_device_train_batch_size 2 \
-        --per_device_eval_batch_size 16 \
-        --gradient_accumulation_steps 16 \
+        --per_device_train_batch_size 3 \
+        --per_device_eval_batch_size 32 \
+        --gradient_accumulation_steps 10 \
         --learning_rate 5e-05 \
         --num_train_epochs 10 \
         --run_name ${model_name_or_path}-${TASK_CONFIG}-${DATASET_CONFIG} \
@@ -101,8 +107,9 @@ do
         --lora_alpha ${lora_alpha} \
         --expert_num ${expert_num} \
         --moe_topk ${moe_topk} \
+        --gate_loss_weight ${gate_loss_weight} \
         --use_test_as_eval \
-        --group_by_length \
+        --group_by_length False \
         --save_lora_weights_only \
         --predict_each_dataset_with_best False \
         --auto_find_best_lora_checkpoint False \
@@ -111,6 +118,11 @@ do
         --evaluation_strategy steps \
         --eval_steps 50 \
         --moe_lora ${moe_lora} \
+        --gate_type ${gate_type} \
+        --gate_loss_type ${gate_loss_type} \
+        --add_noise ${add_noise} \
+        --regularized ${regularized} \
+        --with_universal ${with_universal} \
         #--resume_from_checkpoint /home/zkhu143/iuie/output/ner_lora/plo_all/flan-t5-xl/checkpoint-30 \
         #--evaluation_strategy epoch \
         #--save_strategy epoch \

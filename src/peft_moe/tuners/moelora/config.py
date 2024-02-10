@@ -122,6 +122,11 @@ class MOELoraConfig(PeftConfig):
                                     metadata={"help": "The dimension of the task embedding."})
     expert_num: int = field(default=4, metadata={"help": "The number of experts."})
     moe_topk: int = field(default=-1, metadata={"help": "The topk num for moe gate."})
+    gate_type: str = field(default='TopKGate', metadata={"help": "The type of gate."})
+    gate_loss_type: str = field(default='no_loss', metadata={"help": "The type of gate loss."})
+    add_noise: bool = field(default=False, metadata={"help": "Whether to add noise to the gate output."})
+    regularized: bool = field(default=False, metadata={"help": "Whether to regularize the gate output."})
+    with_universal: bool = field(default=False, metadata={"help": "Whether to add universal expert."})
 
 
     def __post_init__(self):

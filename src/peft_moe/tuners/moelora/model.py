@@ -38,7 +38,7 @@ from peft_moe.utils import (
 
 from .config import MOELoraConfig
 from .gptq import MOEQuantLinear
-from .layer import MOEConv2d, MOEEmbedding, MOELinear, MOELoraLayer
+from .layer import MOEConv2d, MOEEmbedding, MOELinear, MOELoraLayer, MOELinearWithUniversal
 
 
 if is_bnb_available():
@@ -158,6 +158,10 @@ class MOELoraModel(BaseTuner):
             'task_embedding_dim': lora_config.task_embedding_dim,
             'expert_num': lora_config.expert_num,
             'moe_topk': lora_config.moe_topk,
+            'gate_type': lora_config.gate_type,
+            'gate_loss_type': lora_config.gate_loss_type,
+            'add_noise': lora_config.add_noise,
+            'regularized': lora_config.regularized,
         }
         kwargs["loaded_in_8bit"] = optional_kwargs.pop("loaded_in_8bit", False)
         kwargs["loaded_in_4bit"] = optional_kwargs.pop("loaded_in_4bit", False)
@@ -323,7 +327,10 @@ class MOELoraModel(BaseTuner):
                     f"Target module {target} is not supported. Currently, only the following modules are supported: "
                     "`torch.nn.Linear`, `torch.nn.Embedding`, `torch.nn.Conv2d`, `transformers.pytorch_utils.Conv1D`."
                 )
-            new_module = MOELinear(adapter_name, in_features, out_features, bias=bias, **kwargs)
+            if lora_config.with_universal:
+                new_module = MOELinearWithUniversal(adapter_name, in_features, out_features, bias=bias, **kwargs)
+            else:
+                new_module = MOELinear(adapter_name, in_features, out_features, bias=bias, **kwargs)
 
         return new_module
 

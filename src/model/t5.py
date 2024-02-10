@@ -46,7 +46,10 @@ from transformers.utils import (
 )
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 from transformers.models.t5.configuration_t5 import T5Config
-
+import sys
+sys.path.append('../')
+from peft_moe.tuners.moelora.layer import MOELoraLayer, MOELinear, MOELinearWithUniversal
+from .t5_utils import MOEBaseModelOutputWithPastAndCrossAttentions, MOESeq2SeqLMOutput
 
 logger = logging.get_logger(__name__)
 
@@ -204,7 +207,7 @@ PARALLELIZE_DOCSTRING = r"""
 
     ```python
     # Here is an example of a device map on a machine with 4 GPUs using t5-3b, which has a total of 24 attention modules:
-    model = T5ForConditionalGeneration.from_pretrained("t5-3b")
+    model = MOET5ForConditionalGeneration.from_pretrained("t5-3b")
     device_map = {
         0: [0, 1, 2],
         1: [3, 4, 5, 6, 7, 8, 9],
@@ -221,7 +224,7 @@ DEPARALLELIZE_DOCSTRING = r"""
 
     ```python
     # On a 4 GPU machine with t5-3b:
-    model = T5ForConditionalGeneration.from_pretrained("t5-3b")
+    model = MOET5ForConditionalGeneration.from_pretrained("t5-3b")
     device_map = {
         0: [0, 1, 2],
         1: [3, 4, 5, 6, 7, 8, 9],
@@ -488,16 +491,25 @@ class T5Attention(nn.Module):
             """reshape"""
             return states.transpose(1, 2).contiguous().view(batch_size, -1, self.inner_dim)
 
-        def project(hidden_states, proj_layer, key_value_states, past_key_value):
+        def project(hidden_states, proj_layer, key_value_states, past_key_value, ismoe=False):
             """projects hidden states correctly to key/query states"""
+            gate_output = None
             if key_value_states is None:
                 # self-attn
                 # (batch_size, n_heads, seq_length, dim_per_head)
-                hidden_states = shape(proj_layer(hidden_states))
+                if ismoe:
+                    projected, gate_output = proj_layer(hidden_states)
+                else:
+                    projected = proj_layer(hidden_states)
+                hidden_states = shape(projected)
             elif past_key_value is None:
                 # cross-attn
                 # (batch_size, n_heads, seq_length, dim_per_head)
-                hidden_states = shape(proj_layer(key_value_states))
+                if ismoe:
+                    projected, gate_output = proj_layer(key_value_states)
+                else:
+                    projected = proj_layer(key_value_states)
+                hidden_states = shape(projected)
 
             if past_key_value is not None:
                 if key_value_states is None:
@@ -509,23 +521,33 @@ class T5Attention(nn.Module):
                     # the provided `key_value_states` to support prefix tuning
                     # cross-attn
                     # (batch_size, n_heads, seq_length, dim_per_head)
-                    hidden_states = shape(proj_layer(key_value_states))
+                    if ismoe:
+                        projected, gate_output = proj_layer(key_value_states)
+                    else:
+                        projected = proj_layer(key_value_states)
+                    hidden_states = shape(projected)
                 else:
                     # cross-attn
                     hidden_states = past_key_value
-            return hidden_states
-
+            return hidden_states, gate_output
+        
         # get query states
-        query_states = shape(self.q(hidden_states))  # (batch_size, n_heads, seq_length, dim_per_head)
-
+        if isinstance(self.q, MOELinear) or isinstance(self.q, MOELinearWithUniversal):
+            projected, gate_output_q = self.q(hidden_states)
+        else:
+            projected = self.q(hidden_states)
+        query_states = shape(projected) # (batch_size, n_heads, seq_length, dim_per_head)
+        
         # get key/value states
-        key_states = project(
-            hidden_states, self.k, key_value_states, past_key_value[0] if past_key_value is not None else None
+        key_states, gate_output_k = project(
+            hidden_states, self.k, key_value_states, past_key_value[0] if past_key_value is not None else None,
+            ismoe=isinstance(self.k, MOELinear) or isinstance(self.k, MOELinearWithUniversal)
         )
-        value_states = project(
-            hidden_states, self.v, key_value_states, past_key_value[1] if past_key_value is not None else None
+        value_states, gate_output_v = project(
+            hidden_states, self.v, key_value_states, past_key_value[1] if past_key_value is not None else None,
+            ismoe=isinstance(self.v, MOELinear) or isinstance(self.v, MOELinearWithUniversal)
         )
-
+        gate_outputs = {"q": gate_output_q, "k": gate_output_k, "v": gate_output_v}
         # compute scores
         scores = torch.matmul(
             query_states, key_states.transpose(3, 2)
@@ -576,9 +598,9 @@ class T5Attention(nn.Module):
 
         if output_attentions:
             outputs = outputs + (attn_weights,)
+        
+        outputs = outputs + (gate_outputs,)
         return outputs
-
-
 class T5LayerSelfAttention(nn.Module):
     def __init__(self, config, has_relative_attention_bias=False):
         super().__init__()
@@ -700,6 +722,7 @@ class T5Block(nn.Module):
             output_attentions=output_attentions,
         )
         hidden_states, present_key_value_state = self_attention_outputs[:2]
+        #position_bias, attn_weights (output_attentions=True), gate_outputs
         attention_outputs = self_attention_outputs[2:]  # Keep self-attention outputs and relative position weights
 
         # clamp inf values to enable fp16 training
@@ -747,7 +770,11 @@ class T5Block(nn.Module):
                 present_key_value_state = present_key_value_state + cross_attention_outputs[1]
 
             # Keep cross-attention outputs and relative position weights
-            attention_outputs = attention_outputs + cross_attention_outputs[2:]
+                
+            #self:position_bias, attn_weights (output_attentions=True), cross:position_bias, attn_weights (output_attentions=True),
+            #self: gate_outputs, cross: gate_outputs
+            #attention_outputs = attention_outputs + cross_attention_outputs[2:]
+            attention_outputs = attention_outputs[:-1] + cross_attention_outputs[2:-1] + attention_outputs[-1:] + cross_attention_outputs[-1:]
 
         # Apply Feed Forward layer
         hidden_states = self.layer[-1](hidden_states)
@@ -767,8 +794,14 @@ class T5Block(nn.Module):
             outputs = outputs + (present_key_value_state,) + attention_outputs
         else:
             outputs = outputs + attention_outputs
-
-        return outputs  # hidden-states, present_key_value_states, (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights)
+        #print('len(outputs)', len(outputs))
+        #print('is_decoder', self.is_decoder)
+        #print('encoder len(outputs)', '1/2 + 2/3')
+        #decoder len(outputs) in [5, 6, 7, 8] 1/2 + 4/6
+        #print(f"decoder len(outputs)", '5, 7 no use_cache', '5,6 no output_attentions', '8 use_cache and output_attentions')
+        #print('t5.py line 798')
+        #exit(0)
+        return outputs  # hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights), (self-attention gate_outputs), (cross-attention gate_outputs)
 
 
 class T5PreTrainedModel(PreTrainedModel):
@@ -801,7 +834,7 @@ class T5PreTrainedModel(PreTrainedModel):
         factor = self.config.initializer_factor  # Used for testing weights initialization
         if isinstance(module, T5LayerNorm):
             module.weight.data.fill_(factor * 1.0)
-        elif isinstance(module, (T5Model, T5ForConditionalGeneration, T5EncoderModel)):
+        elif isinstance(module, (T5Model, MOET5ForConditionalGeneration, T5EncoderModel)):
             # Mesh TensorFlow embeddings initialization
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
@@ -1037,9 +1070,10 @@ class T5Stack(T5PreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
         all_cross_attentions = () if (output_attentions and self.is_decoder) else None
+        all_gate_outputs = {'self_attention': (), 'cross_attention': ()}
         position_bias = None
-        encoder_decoder_position_bias = None
-
+        encoder_decoder_position_bias = None 
+        
         hidden_states = self.dropout(inputs_embeds)
 
         for i, (layer_module, past_key_value) in enumerate(zip(self.block, past_key_values)):
@@ -1102,12 +1136,18 @@ class T5Stack(T5PreTrainedModel):
                 )
 
             # layer_outputs is a tuple with:
-            # hidden-states, key-value-states, (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights)
+            # encoder hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights),  (self-attention gate_outputs)
+            #  decoder hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights), (self-attention gate_outputs), (cross-attention gate_outputs)
             if use_cache is False:
                 layer_outputs = layer_outputs[:1] + (None,) + layer_outputs[1:]
 
             hidden_states, present_key_value_state = layer_outputs[:2]
-
+            if self.is_decoder and encoder_hidden_states is not None:
+                all_gate_outputs['self_attention'] += (layer_outputs[-2],)
+                all_gate_outputs['cross_attention'] += (layer_outputs[-1],)
+            else:
+                all_gate_outputs['self_attention'] += (layer_outputs[-1],)
+            
             # We share the position biases between the layers - the first layer store them
             # layer_outputs = hidden-states, key-value-states (self-attention position bias), (self-attention weights),
             # (cross-attention position bias), (cross-attention weights)
@@ -1145,15 +1185,17 @@ class T5Stack(T5PreTrainedModel):
                     all_hidden_states,
                     all_attentions,
                     all_cross_attentions,
+                    all_gate_outputs,
                 ]
                 if v is not None
             )
-        return BaseModelOutputWithPastAndCrossAttentions(
+        return MOEBaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hidden_states,
             past_key_values=present_key_value_states,
             hidden_states=all_hidden_states,
             attentions=all_attentions,
             cross_attentions=all_cross_attentions,
+            gate_outputs=all_gate_outputs,
         )
 
 
@@ -1445,7 +1487,7 @@ class T5Model(T5PreTrainedModel):
         >>> decoder_input_ids = tokenizer("Studies show that", return_tensors="pt").input_ids  # Batch size 1
 
         >>> # preprocess: Prepend decoder_input_ids with start token which is pad token for T5Model.
-        >>> # This is not needed for torch's T5ForConditionalGeneration as it does this internally using labels arg.
+        >>> # This is not needed for torch's MOET5ForConditionalGeneration as it does this internally using labels arg.
         >>> decoder_input_ids = model._shift_right(decoder_input_ids)
 
         >>> # forward pass
@@ -1564,7 +1606,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         warnings.warn(
-            "`T5ForConditionalGeneration.parallelize` is deprecated and will be removed in v5 of Transformers, you"
+            "`MOET5ForConditionalGeneration.parallelize` is deprecated and will be removed in v5 of Transformers, you"
             " should load your model with `device_map='balanced'` in the call to `from_pretrained`. You can also"
             " provide your own `device_map` but it needs to be a dictionary module_name to device, so for instance"
             " {'encoder.block.0': 0, 'encoder.block.1': 1, ...}",
@@ -1617,7 +1659,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
         return self.decoder
 
     @add_start_docstrings_to_model_forward(T5_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
+    @replace_return_docstrings(output_type=MOESeq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -1636,7 +1678,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
+    ) -> Union[Tuple[torch.FloatTensor], MOESeq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[-100, 0, ...,
@@ -1648,10 +1690,10 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
         Examples:
 
         ```python
-        >>> from transformers import AutoTokenizer, T5ForConditionalGeneration
+        >>> from transformers import AutoTokenizer, MOET5ForConditionalGeneration
 
         >>> tokenizer = AutoTokenizer.from_pretrained("t5-small")
-        >>> model = T5ForConditionalGeneration.from_pretrained("t5-small")
+        >>> model = MOET5ForConditionalGeneration.from_pretrained("t5-small")
 
         >>> # training
         >>> input_ids = tokenizer("The <extra_id_0> walks in <extra_id_1> park", return_tensors="pt").input_ids
@@ -1676,7 +1718,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
             if self.config.num_layers == self.config.num_decoder_layers:
                 warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                 decoder_head_mask = head_mask
-
+        encoder_gate_outputs = None
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
             # Convert encoder inputs in embeddings if needed
@@ -1689,6 +1731,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
+            encoder_gate_outputs = encoder_outputs.gate_outputs if return_dict else encoder_outputs[-1]
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
@@ -1731,7 +1774,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
+        decoder_gate_outputs = decoder_outputs.gate_outputs if return_dict else decoder_outputs[-1]
         sequence_output = decoder_outputs[0]
 
         # Set device for model parallelism
@@ -1746,20 +1789,58 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
             sequence_output = sequence_output * (self.model_dim**-0.5)
 
         lm_logits = self.lm_head(sequence_output)
-
+        def mean_ignoring_padding(tensor, labels, ignore_index=-100):
+            if not isinstance(tensor, torch.Tensor):
+                assert tensor == 0, "tensor should be 0, but is {}".format(tensor)
+                return 0
+            assert tensor.shape == labels.shape, "tensor shape {} should be same as labels shape {}".format(tensor.shape, labels.shape)
+            mask = (labels != ignore_index)
+            #mask = mask.to(tensor.device,tensor.dtype)
+            return (tensor*mask).sum()/mask.sum()
         loss = None
+        gate_loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-100)
             # move labels to correct device to enable PP
             labels = labels.to(lm_logits.device)
             loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
             # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+            gate_loss = 0
+            gate_num = 0
+            if encoder_gate_outputs is not None:
+                for tempi, gate_output in enumerate(encoder_gate_outputs['self_attention']):
+                    for module in ['q', 'k', 'v']:
+                        if gate_output[module] is None:
+                            continue
+                        gate_output[module]['loss'] = mean_ignoring_padding(gate_output[module]['loss'].to(attention_mask.device), attention_mask, ignore_index=0)
+                        #print(type(gate_output[module]['loss']), gate_output[module]['loss'].shape, gate_output[module]['loss'].dtype, gate_output[module]['loss'].device)
+                        #print(type(gate_output[module]['lora_scaling']))
+                        #print(gate_output[module]['lora_scaling'].shape, gate_output[module]['lora_scaling'].dtype, gate_output[module]['lora_scaling'].device)
+                        gate_loss = gate_loss + (gate_output[module]['loss']*gate_output[module]['lora_scaling'])
+                        gate_num += 1
+                assert len(encoder_gate_outputs['cross_attention'])==0, "encoder's cross_attention q should be None"
+            
+            assert len(decoder_gate_outputs['self_attention'])==len(decoder_gate_outputs['cross_attention']), "decoder's self_attention and cross_attention should have same length"
+            for attention_mode in ['self_attention', 'cross_attention']:
+                for gate_output in decoder_gate_outputs[attention_mode]:
+                    for module in ['q', 'k', 'v']:
+                        if gate_output[module] is None:
+                            continue
+                        target_mask = attention_mask if (attention_mode == 'cross_attention' and module in ['k','v']) else labels
+                        mask_id = 0 if (attention_mode == 'cross_attention' and module in ['k','v']) else -100
+                        assert gate_output[module]['loss'].shape == target_mask.shape, "attention mode {}, module {} , gate_output[module]['loss'] shape {} should be same as target_mask shape {}".format(attention_mode, module, gate_output[module]['loss'].shape, target_mask.shape)
+                        gate_output[module]['loss'] = mean_ignoring_padding(gate_output[module]['loss'].to(target_mask.device), target_mask, ignore_index=mask_id)
+                        gate_loss = gate_loss + (gate_output[module]['loss']*gate_output[module]['lora_scaling']).to(gate_loss.device)
+                        gate_num += 1
+            gate_loss = gate_loss/gate_num            
 
         if not return_dict:
+            print("t5.py line 1813 not return_dict")
+            exit(0)
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
             return ((loss,) + output) if loss is not None else output
 
-        return Seq2SeqLMOutput(
+        return MOESeq2SeqLMOutput(
             loss=loss,
             logits=lm_logits,
             past_key_values=decoder_outputs.past_key_values,
@@ -1769,6 +1850,9 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
             encoder_last_hidden_state=encoder_outputs.last_hidden_state,
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
+            gate_loss=gate_loss,
+            encoder_gate_outputs=encoder_gate_outputs,
+            decoder_gate_outputs=decoder_gate_outputs,
         )
 
     def prepare_inputs_for_generation(
