@@ -53,9 +53,6 @@ if __name__ == '__main__':
     #origin_dir = '/storage/zkhu/UIE-pp/data/ie_instruct/RE/semval-RE'
     #target_dir = '/storage/zkhu/UIE-pp/data/ie_instruct/RE/finred'
     #generate_no_label_dataset('RE','semval-RE',origin_dir,target_dir)
-    origin_dir = './data/ie_instruct/NER/PolyglotNER'
-    target_dir = './data/ie_instruct/NER/PolyglotNER_sample_20000'
-    sample_trainset('NER','PolyglotNER',origin_dir,target_dir,20000)
-    origin_dir = './data/ie_instruct/NER/WikiNeural'
-    target_dir = './data/ie_instruct/NER/WikiNeural_sample_20000'
-    sample_trainset('NER','WikiNeural',origin_dir,target_dir,20000)
+    origin_dir = './data/ie_instruct/NER/MultiNERD'
+    target_dir = './data/ie_instruct/NER/MultiNERD_sample_20000'
+    sample_trainset('NER','MultiNERD',origin_dir,target_dir,20000)

@@ -9,7 +9,7 @@ import pandas as pd
 import numpy
 import random
 import nevergrad as ng
-from peft import PeftModel, PeftConfig, set_peft_model_state_dict, get_peft_model_state_dict
+from peft_moe import PeftModel, PeftConfig, set_peft_model_state_dict, get_peft_model_state_dict
 from functools import partial
 from typing import List, Optional, Union
 

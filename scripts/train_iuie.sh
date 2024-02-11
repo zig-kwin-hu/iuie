@@ -15,13 +15,15 @@ export TRANSFORMERS_CACHE=./huggingface
 port=$(shuf -i25000-30000 -n1)
 
 model_name_or_path=ZWK/InstructUIE
-lora_r=64
+lora_r=16
 lora_alpha=16
 add_name=True
+#--per_device_train_batch_size 10 \
+#--gradient_accumulation_steps 3 \
 # model_name_or_path=google/flan-t5-xxl
 
 # for TASK in re ner eet eea 
-for TASK_CONFIG in ner
+for TASK_CONFIG in re
 do
     for DATASET_CONFIG in ${TASK2DATASETS[${TASK_CONFIG}]}
     do
@@ -77,8 +79,9 @@ do
         --save_total_limit 50 \
         --over_sampling ${over_sample} \
         --bf16 True \
-        --load_best_model_at_end False \
+        --load_best_model_at_end True \
         --metric_for_best_model eval_f1 \
+        --early_stopping_patience 5 \
         --only_save_best_model True \
         --lora_target_modules q,v \
         --lora_r ${lora_r} \
@@ -92,6 +95,7 @@ do
         --save_steps 50 \
         --evaluation_strategy steps \
         --eval_steps 50 \
+        #--moe_lora True \
         #--resume_from_checkpoint /home/zkhu143/iuie/output/ner_lora/plo_all/iuie-xxl/checkpoint-30 \
         #--evaluation_strategy epoch \
         #--save_strategy epoch \

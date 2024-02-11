@@ -132,6 +132,7 @@ dmypy.json
 hostfile
 wandb/
 output/
+output_ssd2/
 exp.py
 
 .DS_Store

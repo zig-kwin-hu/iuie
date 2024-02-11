@@ -46,7 +46,7 @@ from transformers import (
 from transformers.file_utils import is_offline_mode
 from transformers.trainer_utils import get_last_checkpoint
 
-from peft import (
+from peft_moe import (
     LoraConfig,
     TaskType,
     get_peft_model,
@@ -56,6 +56,7 @@ from peft import (
     set_peft_model_state_dict,
     PeftModel,
     AdaLoraConfig,
+    MOELoraConfig,
 )
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
@@ -63,12 +64,13 @@ from accelerate.utils import get_balanced_memory
 from model.bloom import BloomForCausalLM_WithLoss
 from model.codegen import CodeGenForCausalLM_WithLoss
 from model.gpt_neox import GPTNeoXForCausalLM_WithLoss
+from model.t5 import MOET5ForConditionalGeneration
 # from utils.lorahub import set_lorahub_model
 
 from uie_collator import DataCollatorForUIE
 from uie_dataset import gen_cache_path
 
-from uie_trainer import UIETrainer, DenserEvalCallback, SavePeftModelCallback, SaveMetricsCallback, skip_instructions, SaveBestModelsCallback, SkipEpochEvalCallback
+from uie_trainer import UIETrainer, DenserEvalCallback, SavePeftModelCallback, SaveMetricsCallback, skip_instructions, SaveBestModelsCallback, SkipEpochEvalCallback, EarlyStoppingCallbackWithLog
 from compute_metrics import compute_f1, compute_metrics, compute_grouped_metrics
 
 import json
@@ -193,6 +195,46 @@ class ModelArguments:
     use_flash_attention_2: Optional[bool] = field(
         default=False,
         metadata={"help": "If true, use flash attention 2."},
+    )
+    moe_lora: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If true, use moe lora."},
+    )
+    task_num: Optional[int] = field(
+        default=1,
+        metadata={"help": "The number of tasks."},
+    )
+    expert_num: Optional[int] = field(
+        default=1,
+        metadata={"help": "The number of experts in moe lora."},
+    )
+    task_embedding_dim: Optional[int] = field(
+        default=64,
+        metadata={"help": "The embedding dim for task embedding."},
+    )
+    moe_topk: Optional[int] = field(
+        default=-1,
+        metadata={"help": "The topk for moe lora."},
+    )
+    gate_type: Optional[str] = field(
+        default="TopKGate",
+        metadata={"help": "The gate type for moe lora."},
+    )
+    gate_loss_type: Optional[str] = field(
+        default="no_loss",
+        metadata={"help": "The gate loss type for moe lora."},
+    )
+    add_noise: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to add noise to the gate output."},
+    )
+    regularized: Optional[bool] = field(
+        default=True,
+        metadata={"help": "Whether to regularize the gate output."},
+    )
+    with_universal: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to add universal expert."},
     )
 
 
@@ -392,6 +434,14 @@ class UIETrainingArguments(Seq2SeqTrainingArguments):
         default=False,
         metadata={"help": "If true, automatically find the best lora checkpoint."},
     )
+    early_stopping_patience: Optional[int] = field(
+        default=0,
+        metadata={"help": "If specified, the model will do early stopping."},
+    )
+    gate_loss_weight: Optional[float] = field(
+        default=1e-2,
+        metadata={"help": "The weight for gate loss."},
+    )
     
 
 
@@ -529,6 +579,11 @@ def main():
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
             )
+    elif any([k in model_args.model_name_or_path.lower() for k in ['t5', 'instructuie']]) and model_args.moe_lora:
+        model_class = MOET5ForConditionalGeneration
+        task_type = TaskType.SEQ_2_SEQ_LM
+        if not training_args.deepspeed:
+            device_map = "auto"
     else:
         model_class = AutoModelForSeq2SeqLM
         task_type = TaskType.SEQ_2_SEQ_LM
@@ -577,7 +632,25 @@ def main():
         )
 
     if training_args.use_lora or model_args.use_ada_lora:
-        if not model_args.use_ada_lora:
+        if model_args.moe_lora:
+            config = MOELoraConfig(
+                r=model_args.lora_r,
+                lora_alpha=model_args.lora_alpha,
+                target_modules=model_args.lora_target_modules,
+                lora_dropout=model_args.lora_dropout,
+                bias="none",
+                task_type=task_type,
+                expert_num=model_args.expert_num,
+                task_num=model_args.task_num,
+                task_embedding_dim=model_args.task_embedding_dim,
+                moe_topk=model_args.moe_topk,
+                gate_type=model_args.gate_type,
+                gate_loss_type=model_args.gate_loss_type,
+                add_noise=model_args.add_noise,
+                regularized=model_args.regularized,
+                with_universal=model_args.with_universal,
+            )
+        elif not model_args.use_ada_lora:
             config = LoraConfig(
                 r=model_args.lora_r,
                 lora_alpha=model_args.lora_alpha,
@@ -787,6 +860,8 @@ def main():
         assert training_args.evaluation_strategy == 'epoch', "skip_epoch_eval only works with epoch evaluation strategy"
         assert training_args.save_strategy == 'epoch', "skip_epoch_eval only works with epoch save strategy"
         callbacks.append(SkipEpochEvalCallback)
+    if training_args.early_stopping_patience > 0:
+        callbacks.append(EarlyStoppingCallbackWithLog(early_stopping_patience=training_args.early_stopping_patience))
     
     max_new_tokens = (
         training_args.generation_max_length
@@ -796,7 +871,6 @@ def main():
 
     num_beams = data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams
     repetition_penalty = data_args.repetition_penalty
-
     trainer = UIETrainer(
         model=model,
         args=training_args,
@@ -855,8 +929,8 @@ def main():
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
         else:
             train_result = trainer.train()
-        if not training_args.no_saving:
-            trainer.save_model()  # Saves the tokenizer too for easy upload
+        #if not training_args.no_saving:
+            #trainer.save_model()  # Saves the tokenizer too for easy upload
 
         metrics = train_result.metrics
         max_train_samples = (

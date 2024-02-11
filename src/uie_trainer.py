@@ -1,3 +1,47 @@
+from transformers.modeling_utils import PreTrainedModel, load_sharded_checkpoint, unwrap_model
+from transformers.deepspeed import deepspeed_init, deepspeed_load_checkpoint, is_deepspeed_zero3_enabled
+from transformers.trainer_utils import (
+    PREFIX_CHECKPOINT_DIR,
+    BestRun,
+    EvalLoopOutput,
+    EvalPrediction,
+    FSDPOption,
+    HPSearchBackend,
+    HubStrategy,
+    IntervalStrategy,
+    PredictionOutput,
+    RemoveColumnsCollator,
+    ShardedDDPOption,
+    TrainerMemoryTracker,
+    TrainOutput,
+    default_compute_objective,
+    default_hp_space,
+    denumpify_detensorize,
+    enable_full_determinism,
+    find_executable_batch_size,
+    get_last_checkpoint,
+    has_length,
+    number_of_arguments,
+    seed_worker,
+    set_seed,
+    speed_metrics,
+)
+from transformers.training_args import OptimizerNames, ParallelMode, TrainingArguments
+from transformers.utils import (
+    ADAPTER_SAFE_WEIGHTS_NAME,
+    ADAPTER_WEIGHTS_NAME,
+    CONFIG_NAME,
+    SAFE_WEIGHTS_INDEX_NAME,
+    SAFE_WEIGHTS_NAME,
+    WEIGHTS_INDEX_NAME,
+    WEIGHTS_NAME,
+    is_peft_available,
+    is_sagemaker_mp_enabled,
+    is_torch_tpu_available,
+    is_safetensors_available,
+    logging,
+)
+
 import torch
 from transformers import GenerationConfig
 from transformers.trainer_seq2seq import Seq2SeqTrainer
@@ -9,9 +53,12 @@ from transformers.trainer_callback import (
     TrainerControl,
     TrainerState,
 )
+from transformers import EarlyStoppingCallback
+
 from transformers.trainer_pt_utils import nested_truncate, nested_concat, nested_numpify
 from transformers.deepspeed import deepspeed_init, is_deepspeed_zero3_enabled
-from peft import get_peft_model_state_dict
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES, MODEL_MAPPING_NAMES
+from peft_moe import get_peft_model_state_dict
 
 from uie_collator import SUPPORTED_DECODER_MODELS, check_model
 from uie_dataset import ANSWER_PREFIX
@@ -20,6 +67,25 @@ import json
 import numpy as np
 import IPython
 from typing import NamedTuple, Optional, Union, Tuple, Dict, List, Callable, Iterable
+from transformers.utils import logging
+if is_sagemaker_mp_enabled():
+    import smdistributed.modelparallel.torch as smp
+    from smdistributed.modelparallel import __version__ as SMP_VERSION
+
+    IS_SAGEMAKER_MP_POST_1_10 = version.parse(SMP_VERSION) >= version.parse("1.10")
+
+    from transformers.trainer_pt_utils import smp_forward_backward, smp_forward_only, smp_gather, smp_nested_concat
+else:
+    IS_SAGEMAKER_MP_POST_1_10 = False
+if is_peft_available():
+    from peft import PeftModel
+    from peft_moe import PeftModel as PeftMoeModel
+if is_safetensors_available():
+    import safetensors.torch
+
+
+logger = logging.get_logger(__name__)
+
 class UIEPredictionOutput(NamedTuple):
     predictions: Union[np.ndarray, Tuple[np.ndarray]]
     label_ids: Optional[Union[np.ndarray, Tuple[np.ndarray]]]
@@ -167,7 +233,41 @@ class SaveBestModelsCallback(TrainerCallback):
                     trainer._save_checkpoint(model, trial, metrics=None, checkpoint_folder=folder_name)
                 print(f"best model for {dataset_name}|{task_name} saved at {checkpoint_folder}")
         return control
+class EarlyStoppingCallbackWithLog(EarlyStoppingCallback):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        print('early stopping callback initialized\n\n')
+    def check_metric_value(self, args, state, control, metric_value):
+        # best_metric is set by code for load_best_model
+        operator = np.greater if args.greater_is_better else np.less
+        if state.best_metric is None or \
+        (operator(metric_value, state.best_metric) 
+         and abs(metric_value - state.best_metric) > self.early_stopping_threshold):
+            self.early_stopping_patience_counter = 0
+            with open(os.path.join(args.output_dir, 'early_stopping_log.jsonl'), 'a+') as f:
+                f.write('set best metric, '+'state.best_metric: '+str(state.best_metric)+' metric_value: '+str(metric_value)+'\n')
+        else:
+            self.early_stopping_patience_counter += 1
+    def on_evaluate(self, args, state, control, metrics, **kwargs):
+        metric_to_check = args.metric_for_best_model
+        if not metric_to_check.startswith("eval_"):
+            metric_to_check = f"eval_{metric_to_check}"
+        metric_value = metrics.get(metric_to_check)
 
+        if metric_value is None:
+            logger.warning(
+                f"early stopping required metric_for_best_model, but did not find {metric_to_check} so early stopping"
+                " is disabled"
+            )
+            return
+
+        self.check_metric_value(args, state, control, metric_value)
+        if self.early_stopping_patience_counter >= self.early_stopping_patience:
+            control.should_training_stop = True
+        with open(os.path.join(args.output_dir, 'early_stopping_log.jsonl'), 'a+') as f:
+           f.write(json.dumps({'global_step':state.global_step, 'metric_value':metric_value, \
+                               'early_stopping_patience_counter':self.early_stopping_patience_counter, \
+                                   'should_training_stop':str(control.should_training_stop)})+'\n')
 class UIETrainer(Seq2SeqTrainer):
     #modified by huzikun, use customized callback handler
     def __init__(
@@ -479,9 +579,11 @@ class UIETrainer(Seq2SeqTrainer):
                 losses = self._nested_gather(loss.repeat(batch_size))
                 losses_host = losses if losses_host is None else torch.cat((losses_host, losses), dim=0)
             if labels is not None:
-                labels = self._pad_across_processes(labels)
+                #labels = self._pad_across_processes(labels)
+                labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
             if inputs_decode is not None:
-                inputs_decode = self._pad_across_processes(inputs_decode)
+                #inputs_decode = self._pad_across_processes(inputs_decode)
+                inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
                 inputs_decode = self._nested_gather(inputs_decode)
                 inputs_host = (
                     inputs_decode
@@ -489,7 +591,8 @@ class UIETrainer(Seq2SeqTrainer):
                     else nested_concat(inputs_host, inputs_decode, padding_index=-100)
                 )
             if logits is not None:
-                logits = self._pad_across_processes(logits)
+                #logits = self._pad_across_processes(logits)
+                logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
                 if self.preprocess_logits_for_metrics is not None:
                     logits = self.preprocess_logits_for_metrics(logits, labels)
                 logits = self._nested_gather(logits)
@@ -640,7 +743,10 @@ class UIETrainer(Seq2SeqTrainer):
             inputs["output_hidden_states"] = True
         # XXX: adapt synced_gpus for fairscale as well
         gen_kwargs = self._gen_kwargs
-        gen_kwargs["synced_gpus"] = True if is_deepspeed_zero3_enabled() else False
+        #default_synced_gpus = True if is_deepspeed_zero3_enabled() else False
+        gen_kwargs["synced_gpus"] = (
+            gen_kwargs["synced_gpus"] if gen_kwargs.get("synced_gpus") is not None else False#default_synced_gpus
+        )
 
         if "attention_mask" in inputs:
             gen_kwargs["attention_mask"] = inputs.get("attention_mask", None)
@@ -649,7 +755,10 @@ class UIETrainer(Seq2SeqTrainer):
             gen_kwargs["num_beams"] = 1
         if not gen_kwargs.get("max_new_tokens"):
             gen_kwargs["max_new_tokens"] = gen_kwargs["max_length"]
-            
+        #if "num_beams" in gen_kwargs and gen_kwargs["num_beams"] is None:
+            #gen_kwargs.pop("num_beams")
+        #if "max_length" in gen_kwargs and gen_kwargs["max_length"] is None:
+            #gen_kwargs.pop("max_length")  
         generation_config = GenerationConfig(**gen_kwargs)
 
         # prepare generation inputs
@@ -659,10 +768,23 @@ class UIETrainer(Seq2SeqTrainer):
             generation_inputs = inputs[self.model.encoder.main_input_name]
         else:
             generation_inputs = inputs[self.model.main_input_name]
-        
+        #generation_inputs = inputs.copy()
+
+        #if (
+        #    "labels" in generation_inputs
+        #    and "decoder_input_ids" in generation_inputs
+        #    and generation_inputs["labels"].shape == generation_inputs["decoder_input_ids"].shape
+        #):
+        #    generation_inputs = {
+        #        k: v for k, v in inputs.items() if k not in ("decoder_input_ids", "decoder_attention_mask")
+        #    }
+        #print('gen_kwargs',gen_kwargs)
+        #"/home/zkhu142/anaconda3/envs/llama/lib/python3.8/site-packages/transformers/generation/utils.py", line 1297, 
         generated_tokens = self.model.generate(
+            #**generation_inputs,
+            #**gen_kwargs,
             input_ids=generation_inputs,
-            generation_config=generation_config
+            generation_config=generation_config,
         )
 
         bs, source_len = inputs['input_ids'].shape
@@ -753,6 +875,7 @@ class UIETrainer(Seq2SeqTrainer):
         run_dir = self._get_output_dir(trial=trial)
         output_dir = os.path.join(run_dir, checkpoint_folder)
 
+                
         if self.args.use_lora and self.args.save_lora_weights_only:
             # Modified: if use_lora is True, model will be PeftModel and the save_pretrained only save adapter_model.bin and adapter_config.json
             self.model.save_pretrained(output_dir)
@@ -808,55 +931,53 @@ class UIETrainer(Seq2SeqTrainer):
                 reissue_pt_warnings(caught_warnings)
                 if self.do_grad_scaling:
                     torch.save(self.scaler.state_dict(), os.path.join(output_dir, SCALER_NAME))
+            
+            
+        # Determine the new best metric / best model checkpoint
+        if metrics is not None and self.args.metric_for_best_model is not None:
+            metric_to_check = self.args.metric_for_best_model
+            if not metric_to_check.startswith("eval_"):
+                metric_to_check = f"eval_{metric_to_check}"
+            metric_value = metrics[metric_to_check]
 
-            # Determine the new best metric / best model checkpoint
-            if metrics is not None and self.args.metric_for_best_model is not None:
-                metric_to_check = self.args.metric_for_best_model
-                if not metric_to_check.startswith("eval_"):
-                    metric_to_check = f"eval_{metric_to_check}"
-                metric_value = metrics[metric_to_check]
-
-                operator = np.greater if self.args.greater_is_better else np.less
-                if (
-                    self.state.best_metric is None
-                    or self.state.best_model_checkpoint is None
-                    or operator(metric_value, self.state.best_metric)
-                ):
-                    self.state.best_metric = metric_value
-                    self.state.best_model_checkpoint = output_dir
-
-            # Save the Trainer state
+            operator = np.greater if self.args.greater_is_better else np.less
+            if (
+                self.state.best_metric is None
+                or self.state.best_model_checkpoint is None
+                or operator(metric_value, self.state.best_metric)
+            ):
+                self.state.best_metric = metric_value
+                self.state.best_model_checkpoint = output_dir
+        # Save the Trainer state
             if self.args.should_save:
                 self.state.save_to_json(os.path.join(output_dir, TRAINER_STATE_NAME))
-
-            # Save RNG state in non-distributed training
-            rng_states = {
-                "python": random.getstate(),
-                "numpy": np.random.get_state(),
-                "cpu": torch.random.get_rng_state(),
-            }
-            if torch.cuda.is_available():
-                if self.args.parallel_mode == ParallelMode.DISTRIBUTED:
-                    # In non distributed, we save the global CUDA RNG state (will take care of DataParallel)
-                    rng_states["cuda"] = torch.cuda.random.get_rng_state_all()
-                else:
-                    rng_states["cuda"] = torch.cuda.random.get_rng_state()
-
-            if is_torch_tpu_available():
-                rng_states["xla"] = xm.get_rng_state()
-
-            # A process can arrive here before the process 0 has a chance to save the model, in which case output_dir may
-            # not yet exist.
-            os.makedirs(output_dir, exist_ok=True)
-
-            if self.args.world_size <= 1:
-                torch.save(rng_states, os.path.join(output_dir, "rng_state.pth"))
+        
+        # Save RNG state in non-distributed training
+        rng_states = {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "cpu": torch.random.get_rng_state(),
+        }
+        if torch.cuda.is_available():
+            if self.args.parallel_mode == ParallelMode.DISTRIBUTED:
+                # In non distributed, we save the global CUDA RNG state (will take care of DataParallel)
+                rng_states["cuda"] = torch.cuda.random.get_rng_state_all()
             else:
-                torch.save(rng_states, os.path.join(output_dir, f"rng_state_{self.args.process_index}.pth"))
-
-            if self.args.push_to_hub:
-                self._push_from_checkpoint(output_dir)
-
+                rng_states["cuda"] = torch.cuda.random.get_rng_state()
+        if is_torch_tpu_available():
+            rng_states["xla"] = xm.get_rng_state()
+        
+        # A process can arrive here before the process 0 has a chance to save the model, in which case output_dir may
+        # not yet exist.
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if self.args.world_size <= 1:
+            torch.save(rng_states, os.path.join(output_dir, "rng_state.pth"))
+        else:
+            torch.save(rng_states, os.path.join(output_dir, f"rng_state_{self.args.process_index}.pth"))
+        if self.args.push_to_hub:
+            self._push_from_checkpoint(output_dir)
+        
         # Maybe delete some older checkpoints.
         if self.args.should_save:
             self._rotate_checkpoints(use_mtime=True, output_dir=run_dir)
@@ -953,3 +1074,124 @@ class UIETrainer(Seq2SeqTrainer):
             return UIEPredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics, embeddings=all_embeddings, inputs=all_inputs)
         else:
             return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics)
+
+    #modified by huzikun, add condition to check whether the model is PeftModel or PeftMoeModel, if so, load adapter model
+    def _load_best_model(self):
+        logger.info(f"Loading best model from {self.state.best_model_checkpoint} (score: {self.state.best_metric}).")
+        best_model_path = os.path.join(self.state.best_model_checkpoint, WEIGHTS_NAME)
+        best_safe_model_path = os.path.join(self.state.best_model_checkpoint, SAFE_WEIGHTS_NAME)
+        best_adapter_model_path = os.path.join(self.state.best_model_checkpoint, ADAPTER_WEIGHTS_NAME)
+        best_safe_adapter_model_path = os.path.join(self.state.best_model_checkpoint, ADAPTER_SAFE_WEIGHTS_NAME)
+
+        model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
+        if (
+            os.path.exists(best_model_path)
+            or os.path.exists(best_safe_model_path)
+            or os.path.exists(best_adapter_model_path)
+            or os.path.exists(best_safe_adapter_model_path)
+        ):
+            if self.is_deepspeed_enabled:
+                deepspeed_load_checkpoint(self.model_wrapped, self.state.best_model_checkpoint)
+            else:
+                has_been_loaded = True
+                if is_sagemaker_mp_enabled():
+                    if os.path.isfile(os.path.join(self.state.best_model_checkpoint, "user_content.pt")):
+                        # If the 'user_content.pt' file exists, load with the new smp api.
+                        # Checkpoint must have been saved with the new smp api.
+                        smp.resume_from_checkpoint(
+                            path=self.state.best_model_checkpoint,
+                            tag=WEIGHTS_NAME,
+                            partial=False,
+                            load_optimizer=False,
+                        )
+                    else:
+                        # If the 'user_content.pt' file does NOT exist, load with the old smp api.
+                        # Checkpoint must have been saved with the old smp api.
+                        if self.args.save_safetensors and os.path.isfile(best_safe_model_path):
+                            state_dict = safetensors.torch.load_file(best_safe_model_path, device="cpu")
+                        else:
+                            state_dict = torch.load(best_model_path, map_location="cpu")
+
+                        state_dict["_smp_is_partial"] = False
+                        load_result = model.load_state_dict(state_dict, strict=True)
+                elif self.is_fsdp_enabled:
+                    self.accelerator.state.fsdp_plugin.load_model(
+                        self.accelerator, model, self.state.best_model_checkpoint
+                    )
+                else:
+                    #modified by huzikun, add condition to load adapter model
+                    if is_peft_available() and (isinstance(model, PeftModel) or isinstance(model, PeftMoeModel)):
+                        # If train a model using PEFT & LoRA, assume that adapter have been saved properly.
+                        if hasattr(model, "active_adapter") and hasattr(model, "load_adapter"):
+                            if os.path.exists(best_adapter_model_path) or os.path.exists(best_safe_adapter_model_path):
+                                model.load_adapter(self.state.best_model_checkpoint, model.active_adapter)
+                                # Load_adapter has no return value present, modify it when appropriate.
+                                from torch.nn.modules.module import _IncompatibleKeys
+
+                                load_result = _IncompatibleKeys([], [])
+                            else:
+                                logger.warning(
+                                    "The intermediate checkpoints of PEFT may not be saved correctly, "
+                                    f"using `TrainerCallback` to save {ADAPTER_WEIGHTS_NAME} in corresponding folders, "
+                                    "here are some examples https://github.com/huggingface/peft/issues/96"
+                                )
+                                has_been_loaded = False
+                        else:
+                            logger.warning("Could not load adapter model, make sure to have `peft>=0.3.0` installed")
+                            has_been_loaded = False
+                    else:
+                        # We load the model state dict on the CPU to avoid an OOM error.
+                        if self.args.save_safetensors and os.path.isfile(best_safe_model_path):
+                            state_dict = safetensors.torch.load_file(best_safe_model_path, device="cpu")
+                        else:
+                            state_dict = torch.load(best_model_path, map_location="cpu")
+
+                        # If the model is on the GPU, it still works!
+                        # workaround for FSDP bug https://github.com/pytorch/pytorch/issues/82963
+                        # which takes *args instead of **kwargs
+                        load_result = model.load_state_dict(state_dict, False)
+                if not is_sagemaker_mp_enabled() and has_been_loaded:
+                    self._issue_warnings_after_load(load_result)
+        elif os.path.exists(os.path.join(self.state.best_model_checkpoint, WEIGHTS_INDEX_NAME)):
+            load_result = load_sharded_checkpoint(
+                model, self.state.best_model_checkpoint, strict=is_sagemaker_mp_enabled()
+            )
+            if not is_sagemaker_mp_enabled():
+                self._issue_warnings_after_load(load_result)
+        else:
+            logger.warning(
+                f"Could not locate the best model at {best_model_path}, if you are running a distributed training "
+                "on multiple nodes, you should activate `--save_on_each_node`."
+            )
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        if self.label_smoother is not None and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+        outputs = model(**inputs)
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        if labels is not None:
+            if unwrap_model(model)._get_name() in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+                loss = self.label_smoother(outputs, labels, shift_labels=True)
+            else:
+                loss = self.label_smoother(outputs, labels)
+        else:
+            if isinstance(outputs, dict) and "loss" not in outputs:
+                raise ValueError(
+                    "The model did not return a loss from the inputs, only the following keys: "
+                    f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
+                )
+            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+        if 'gate_loss' in outputs and outputs['gate_loss'] is not None:
+            loss = loss + outputs['gate_loss']*self.args.gate_loss_weight
+        return (loss, outputs) if return_outputs else loss
