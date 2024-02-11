@@ -18,7 +18,7 @@ port=$(shuf -i25000-30000 -n1)
 expert_num=4
 lora_r=16
 lora_alpha=16
-add_name=True
+add_name=False
 moe_topk=1
 moe_lora=True
 gate_type=TopKGate
@@ -29,8 +29,8 @@ regularized=False
 with_universal=True
 #--per_device_train_batch_size 10 \
 #--gradient_accumulation_steps 3 \
-model_name_or_path=google/flan-t5-xl
-#model_name_or_path=ZWK/InstructUIE
+#model_name_or_path=google/flan-t5-xl
+model_name_or_path=ZWK/InstructUIE
 name_after_slash=$(echo "$model_name_or_path" | cut -d'/' -f2)
 
 # for TASK in re ner eet eea 
@@ -56,7 +56,7 @@ do
                 output_dir="/ssd2/zkhu/output/${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_${lora_r}"
             fi
         fi
-        CUDA_VISIBLE_DEVICES=0 python src/run_uie.py \
+        CUDA_VISIBLE_DEVICES=0,1,2,3 python src/run_uie.py \
         --do_train \
         --do_eval \
         --do_predict \
@@ -73,9 +73,9 @@ do
         --min_positive_labels -1 \
         --output_dir "${output_dir}" \
         --input_record_file iuie.record \
-        --per_device_train_batch_size 3 \
+        --per_device_train_batch_size 6 \
         --per_device_eval_batch_size 32 \
-        --gradient_accumulation_steps 10 \
+        --gradient_accumulation_steps 5 \
         --learning_rate 5e-05 \
         --num_train_epochs 10 \
         --run_name ${model_name_or_path}-${TASK_CONFIG}-${DATASET_CONFIG} \
@@ -100,7 +100,7 @@ do
         --bf16 True \
         --load_best_model_at_end True \
         --metric_for_best_model eval_f1 \
-        --early_stopping_patience 10 \
+        --early_stopping_patience 5 \
         --only_save_best_model True \
         --lora_target_modules q,v \
         --lora_r ${lora_r} \
@@ -114,9 +114,9 @@ do
         --predict_each_dataset_with_best False \
         --auto_find_best_lora_checkpoint False \
         --save_strategy steps \
-        --save_steps 50 \
+        --save_steps 100 \
         --evaluation_strategy steps \
-        --eval_steps 50 \
+        --eval_steps 100 \
         --moe_lora ${moe_lora} \
         --gate_type ${gate_type} \
         --gate_loss_type ${gate_loss_type} \
