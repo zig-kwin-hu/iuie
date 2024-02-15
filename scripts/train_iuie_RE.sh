@@ -53,7 +53,7 @@ do
             if [[ "${moe_lora}" == "True" ]]; then
                 output_dir="output_ssd2/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${cluster_short_name}/${name_after_slash}_addname_${lora_r}_${expert_num}_${moe_topk}_${gate_loss_type}_${add_noise}_${regularized}_${with_universal}_${gate_weight_initalized_from_existing}"
             else
-                output_dir="output_ssd2${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}"
+                output_dir="output_ssd2/${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}"
             fi
         else
             if [[ "${moe_lora}" == "True" ]]; then
