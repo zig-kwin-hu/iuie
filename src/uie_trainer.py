@@ -67,7 +67,11 @@ class SkipEpochEvalCallback(TrainerCallback):
                 control.should_save = False
 
         return control
-
+def compute_ratio_of_standard_deviation_over_mean(tensor):
+    # unbiased std
+    std = torch.std(tensor, unbiased=True)
+    mean = torch.mean(tensor)
+    return std / mean
 class DenserEvalCallback(TrainerCallback):
 
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
