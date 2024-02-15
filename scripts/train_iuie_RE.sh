@@ -18,7 +18,7 @@ port=$(shuf -i25000-30000 -n1)
 expert_num=4
 lora_r=16
 lora_alpha=16
-add_name=False
+add_name=True
 moe_topk=1
 moe_lora=False
 gate_type=TopKGate
@@ -44,7 +44,7 @@ for TASK_CONFIG in re
 do
     for DATASET_CONFIG in ${TASK2DATASETS[${TASK_CONFIG}]}
     do
-        if [[ "$DATASET_CONFIG" =~ ^(plo_all|re_all|disease)$ ]]; then
+        if [[ "$DATASET_CONFIG" =~ ^(plo_all|re_all|disease|all)$ ]]; then
             over_sample=True
         else
             over_sample=False
