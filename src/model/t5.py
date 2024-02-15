@@ -463,6 +463,7 @@ class T5Attention(nn.Module):
         query_length=None,
         use_cache=False,
         output_attentions=False,
+        embedding_for_gate=None,
     ):
         """
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
@@ -471,7 +472,8 @@ class T5Attention(nn.Module):
         # Mask is (batch_size, key_length) (non-causal) or (batch_size, key_length, key_length)
         # past_key_value[0] is (batch_size, n_heads, q_len - 1, dim_per_head)
         batch_size, seq_length = hidden_states.shape[:2]
-
+        if embedding_for_gate is not None:
+            assert embedding_for_gate.shape[0] == batch_size
         real_seq_length = seq_length
 
         if past_key_value is not None:
@@ -491,14 +493,16 @@ class T5Attention(nn.Module):
             """reshape"""
             return states.transpose(1, 2).contiguous().view(batch_size, -1, self.inner_dim)
 
-        def project(hidden_states, proj_layer, key_value_states, past_key_value, ismoe=False):
+        def project(hidden_states, proj_layer, key_value_states, past_key_value, ismoe=False, embedding_for_gate=None):
             """projects hidden states correctly to key/query states"""
             gate_output = None
             if key_value_states is None:
                 # self-attn
                 # (batch_size, n_heads, seq_length, dim_per_head)
                 if ismoe:
-                    projected, gate_output = proj_layer(hidden_states)
+                    #expand the embedding_for_gate to the same shape as hidden_states
+                    embedding_for_gate_expanded = embedding_for_gate.unsqueeze(1).expand(-1, hidden_states.shape[1], -1) if embedding_for_gate is not None else None
+                    projected, gate_output = proj_layer(hidden_states, embedding_for_gate=embedding_for_gate_expanded)
                 else:
                     projected = proj_layer(hidden_states)
                 hidden_states = shape(projected)
@@ -506,7 +510,8 @@ class T5Attention(nn.Module):
                 # cross-attn
                 # (batch_size, n_heads, seq_length, dim_per_head)
                 if ismoe:
-                    projected, gate_output = proj_layer(key_value_states)
+                    embedding_for_gate_expanded = embedding_for_gate.unsqueeze(1).expand(-1, key_value_states.shape[1], -1) if embedding_for_gate is not None else None
+                    projected, gate_output = proj_layer(key_value_states, embedding_for_gate=embedding_for_gate_expanded)
                 else:
                     projected = proj_layer(key_value_states)
                 hidden_states = shape(projected)
@@ -522,7 +527,8 @@ class T5Attention(nn.Module):
                     # cross-attn
                     # (batch_size, n_heads, seq_length, dim_per_head)
                     if ismoe:
-                        projected, gate_output = proj_layer(key_value_states)
+                        embedding_for_gate_expanded = embedding_for_gate.unsqueeze(1).expand(-1, key_value_states.shape[1], -1) if embedding_for_gate is not None else None
+                        projected, gate_output = proj_layer(key_value_states, embedding_for_gate=embedding_for_gate)
                     else:
                         projected = proj_layer(key_value_states)
                     hidden_states = shape(projected)
@@ -533,7 +539,8 @@ class T5Attention(nn.Module):
         
         # get query states
         if isinstance(self.q, MOELinear) or isinstance(self.q, MOELinearWithUniversal):
-            projected, gate_output_q = self.q(hidden_states)
+            embedding_for_gate_expanded = embedding_for_gate.unsqueeze(1).expand(-1, hidden_states.shape[1], -1) if embedding_for_gate is not None else None
+            projected, gate_output_q = self.q(hidden_states, embedding_for_gate=embedding_for_gate_expanded)
         else:
             projected = self.q(hidden_states)
         query_states = shape(projected) # (batch_size, n_heads, seq_length, dim_per_head)
@@ -541,11 +548,13 @@ class T5Attention(nn.Module):
         # get key/value states
         key_states, gate_output_k = project(
             hidden_states, self.k, key_value_states, past_key_value[0] if past_key_value is not None else None,
-            ismoe=isinstance(self.k, MOELinear) or isinstance(self.k, MOELinearWithUniversal)
+            ismoe=isinstance(self.k, MOELinear) or isinstance(self.k, MOELinearWithUniversal),
+            embedding_for_gate=embedding_for_gate
         )
         value_states, gate_output_v = project(
             hidden_states, self.v, key_value_states, past_key_value[1] if past_key_value is not None else None,
-            ismoe=isinstance(self.v, MOELinear) or isinstance(self.v, MOELinearWithUniversal)
+            ismoe=isinstance(self.v, MOELinear) or isinstance(self.v, MOELinearWithUniversal),
+            embedding_for_gate=embedding_for_gate
         )
         gate_outputs = {"q": gate_output_q, "k": gate_output_k, "v": gate_output_v}
         # compute scores
@@ -617,6 +626,7 @@ class T5LayerSelfAttention(nn.Module):
         past_key_value=None,
         use_cache=False,
         output_attentions=False,
+        embedding_for_gate=None
     ):
         normed_hidden_states = self.layer_norm(hidden_states)
         attention_output = self.SelfAttention(
@@ -627,6 +637,7 @@ class T5LayerSelfAttention(nn.Module):
             past_key_value=past_key_value,
             use_cache=use_cache,
             output_attentions=output_attentions,
+            embedding_for_gate=embedding_for_gate
         )
         hidden_states = hidden_states + self.dropout(attention_output[0])
         outputs = (hidden_states,) + attention_output[1:]  # add attentions if we output them
@@ -651,6 +662,7 @@ class T5LayerCrossAttention(nn.Module):
         use_cache=False,
         query_length=None,
         output_attentions=False,
+        embedding_for_gate=None
     ):
         normed_hidden_states = self.layer_norm(hidden_states)
         attention_output = self.EncDecAttention(
@@ -663,6 +675,7 @@ class T5LayerCrossAttention(nn.Module):
             use_cache=use_cache,
             query_length=query_length,
             output_attentions=output_attentions,
+            embedding_for_gate=embedding_for_gate
         )
         layer_output = hidden_states + self.dropout(attention_output[0])
         outputs = (layer_output,) + attention_output[1:]  # add attentions if we output them
@@ -694,6 +707,7 @@ class T5Block(nn.Module):
         use_cache=False,
         output_attentions=False,
         return_dict=True,
+        embedding_for_gate=None
     ):
         if past_key_value is not None:
             if not self.is_decoder:
@@ -720,6 +734,7 @@ class T5Block(nn.Module):
             past_key_value=self_attn_past_key_value,
             use_cache=use_cache,
             output_attentions=output_attentions,
+            embedding_for_gate=embedding_for_gate,
         )
         hidden_states, present_key_value_state = self_attention_outputs[:2]
         #position_bias, attn_weights (output_attentions=True), gate_outputs
@@ -753,6 +768,7 @@ class T5Block(nn.Module):
                 query_length=query_length,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
+                embedding_for_gate=embedding_for_gate,
             )
             hidden_states = cross_attention_outputs[0]
 
@@ -989,6 +1005,7 @@ class T5Stack(T5PreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        embedding_for_gate=None,
     ):
         # Model parallel
         if self.model_parallel:
@@ -1097,6 +1114,8 @@ class T5Stack(T5PreTrainedModel):
                     layer_head_mask = layer_head_mask.to(hidden_states.device)
                 if cross_attn_layer_head_mask is not None:
                     cross_attn_layer_head_mask = cross_attn_layer_head_mask.to(hidden_states.device)
+                if embedding_for_gate is not None:
+                    embedding_for_gate = embedding_for_gate.to(hidden_states.device)
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -1133,6 +1152,7 @@ class T5Stack(T5PreTrainedModel):
                     past_key_value=past_key_value,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
+                    embedding_for_gate=embedding_for_gate,
                 )
 
             # layer_outputs is a tuple with:
@@ -1678,6 +1698,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        embedding_for_gate: Optional[torch.FloatTensor] = None,
     ) -> Union[Tuple[torch.FloatTensor], MOESeq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1730,6 +1751,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
+                embedding_for_gate=embedding_for_gate,
             )
             encoder_gate_outputs = encoder_outputs.gate_outputs if return_dict else encoder_outputs[-1]
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
@@ -1773,6 +1795,7 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            embedding_for_gate=embedding_for_gate,
         )
         decoder_gate_outputs = decoder_outputs.gate_outputs if return_dict else decoder_outputs[-1]
         sequence_output = decoder_outputs[0]
@@ -1832,8 +1855,8 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
                         gate_output[module]['loss'] = mean_ignoring_padding(gate_output[module]['loss'].to(target_mask.device), target_mask, ignore_index=mask_id)
                         gate_loss = gate_loss + (gate_output[module]['loss']*gate_output[module]['lora_scaling']).to(gate_loss.device)
                         gate_num += 1
-            gate_loss = gate_loss/gate_num            
-
+            gate_loss = gate_loss/gate_num
+            
         if not return_dict:
             print("t5.py line 1813 not return_dict")
             exit(0)
@@ -1866,13 +1889,13 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
         cross_attn_head_mask=None,
         use_cache=None,
         encoder_outputs=None,
+        embedding_for_gate=None,
         **kwargs,
     ):
         # cut decoder_input_ids if past is used
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
-
-        return {
+        toreturn = {
             "decoder_input_ids": input_ids,
             "past_key_values": past_key_values,
             "encoder_outputs": encoder_outputs,
@@ -1883,6 +1906,9 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
             "cross_attn_head_mask": cross_attn_head_mask,
             "use_cache": use_cache,
         }
+        if embedding_for_gate is not None:
+            toreturn["embedding_for_gate"] = embedding_for_gate
+        return toreturn
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return self._shift_right(labels)

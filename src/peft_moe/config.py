@@ -74,7 +74,10 @@ class PeftConfigMixin(PushToHubMixin):
 
         # save it
         with open(output_path, "w") as writer:
-            writer.write(json.dumps(output_dict, indent=2, sort_keys=True))
+            new_output_dict = {k: v for k, v in output_dict.items() if v is not None}
+            if "existing_gate_weight" in new_output_dict and new_output_dict["existing_gate_weight"] is not None:
+                new_output_dict["existing_gate_weight"] = True
+            writer.write(json.dumps(new_output_dict, indent=2, sort_keys=True))
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, subfolder: Optional[str] = None, **kwargs):

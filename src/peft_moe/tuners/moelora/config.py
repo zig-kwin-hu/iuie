@@ -127,6 +127,8 @@ class MOELoraConfig(PeftConfig):
     add_noise: bool = field(default=False, metadata={"help": "Whether to add noise to the gate output."})
     regularized: bool = field(default=False, metadata={"help": "Whether to regularize the gate output."})
     with_universal: bool = field(default=False, metadata={"help": "Whether to add universal expert."})
+    existing_gate_weight: object = field(default=None, metadata={"help": "The existing gate weight."})
+    gate_embedding_dim: int = field(default=None, metadata={"help": "The dimension of the gate embedding."})
 
 
     def __post_init__(self):

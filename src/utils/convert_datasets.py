@@ -43,6 +43,41 @@ def sample_trainset(task,origin_name,origin_dir,target_dir,sample_num):
     labels = open('{}/labels.json'.format(origin_dir)).readlines()
     with open('{}/labels.json'.format(target_dir),'w') as fout:
         fout.writelines(labels)
+def generate_unique_id(orginal_dir, target_dir):
+    task_dirs = os.listdir(orginal_dir)
+    unique_id_set = set()
+    for task_dir in task_dirs:
+        dataset_dirs = os.listdir('{}/{}'.format(orginal_dir, task_dir))
+        if task_dir in ['NER_LLM']:
+            continue
+        for dataset_dir in dataset_dirs:
+            print('Processing {}/{}'.format(task_dir, dataset_dir))
+            sets = ['train', 'dev', 'test']
+            for set_name in sets:
+                if not os.path.exists('{}/{}/{}/{}.json'.format(origin_dir, task_dir, dataset_dir, set_name)):
+                    continue
+                if os.path.exists('{}/{}/{}/{}.json'.format(target_dir, task_dir, dataset_dir, set_name)):
+                    continue
+                with open('{}/{}/{}/{}.json'.format(orginal_dir, task_dir, dataset_dir, set_name)) as fin:
+                    data = json.load(fin)
+                for i in range(len(data)):
+                    data[i]['unique_id'] = '{}_{}_{}_{}'.format(task_dir, dataset_dir, set_name, i)
+                    if data[i]['unique_id'] in unique_id_set:
+                        raise ValueError('Duplicated unique_id: {}'.format(data[i]['unique_id']))
+                    unique_id_set.add(data[i]['unique_id'])
+                if not os.path.exists('{}/{}/{}'.format(target_dir, task_dir, dataset_dir)):
+                    os.makedirs('{}/{}/{}'.format(target_dir, task_dir, dataset_dir))
+                with open('{}/{}/{}/{}.json'.format(target_dir, task_dir, dataset_dir, set_name), 'w') as fout:
+                    json.dump(data, fout, indent=2)
+            if os.path.exists('{}/{}/{}/labels.json'.format(target_dir, task_dir, dataset_dir)):
+                continue
+            if not os.path.exists('{}/{}/{}/labels.json'.format(orginal_dir, task_dir, dataset_dir)):
+                continue
+            fin = open('{}/{}/{}/labels.json'.format(orginal_dir, task_dir, dataset_dir))
+            fout = open('{}/{}/{}/labels.json'.format(target_dir, task_dir, dataset_dir), 'w')
+            fout.write(fin.read())
+
+
 if __name__ == '__main__':
     #ontology_map = {'adverse effect': 'adverse'}
     #dataset_dir = '/storage/zkhu/UIE-pp/data/ie_instruct/RE/ADE_corpus'
@@ -53,6 +88,9 @@ if __name__ == '__main__':
     #origin_dir = '/storage/zkhu/UIE-pp/data/ie_instruct/RE/semval-RE'
     #target_dir = '/storage/zkhu/UIE-pp/data/ie_instruct/RE/finred'
     #generate_no_label_dataset('RE','semval-RE',origin_dir,target_dir)
-    origin_dir = './data/ie_instruct/NER/MultiNERD'
-    target_dir = './data/ie_instruct/NER/MultiNERD_sample_20000'
-    sample_trainset('NER','MultiNERD',origin_dir,target_dir,20000)
+    #origin_dir = './data/ie_instruct/NER/MultiNERD'
+    #target_dir = './data/ie_instruct/NER/MultiNERD_sample_20000'
+    #sample_trainset('NER','MultiNERD',origin_dir,target_dir,20000)
+    origin_dir = '/storage/zkhu/iuie/data/ie_instruct'
+    target_dir = '/storage/zkhu/iuie/data/ie_instruct_unique_id'
+    generate_unique_id(origin_dir, target_dir)

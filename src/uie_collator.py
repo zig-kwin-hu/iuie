@@ -35,6 +35,11 @@ class DataCollatorForUIE:
     num_examples: int = 0
     input_record_file: str = None
     return_loss_mask: bool = True
+    uid2sentid: dict = None
+    uid2clusterid: dict = None
+    sentence_embeddings_for_gate: Optional[Any] = None
+    cluster_embeddings_for_gate: Optional[Any] = None
+
     #huzikun log
     #input_ids: list = None
     #source_lens: list = None
@@ -87,20 +92,29 @@ class DataCollatorForUIE:
     def seq2seq_call(self, batch, return_tensors):
         sources = []
         labels = []
+        sentids = []
+        clusterids = []
 
         for instance in batch:
+            unique_id = instance['Instance']['unique_id']
             label = instance['Instance']['label']
             labels.append(label)
             instruction = self.get_instruction(instance)
-
-            
+            sentid = self.uid2sentid[unique_id] if self.uid2sentid is not None else None
+            clusterid = self.uid2clusterid[unique_id] if self.uid2clusterid is not None else None
+            sentids.append(sentid)
+            clusterids.append(clusterid)
             source = instruction
             tokenized_source = self.tokenizer(source)["input_ids"]
             if len(tokenized_source) <= self.max_source_length:
                 sources.append(source)
             else:
                 sources.append(self.tokenizer.decode(tokenized_source[:self.max_source_length], skip_special_tokens=True))
-
+        sentence_embedding_for_gate, cluster_embedding_for_gate = None, None
+        if self.sentence_embeddings_for_gate is not None and self.uid2sentid is not None:
+            sentence_embedding_for_gate = self.sentence_embeddings_for_gate[sentids]
+        if self.cluster_embeddings_for_gate is not None and self.uid2clusterid is not None:
+            cluster_embedding_for_gate = self.cluster_embeddings_for_gate[clusterids]
         # TODO, support online demo
         if self.text_only:
             model_inputs = {"inputs": sources, "labels": labels}
@@ -151,6 +165,9 @@ class DataCollatorForUIE:
             if self.model is not None:
                 decoder_input_ids = self.model.prepare_decoder_input_ids_from_labels(labels=model_inputs["labels"])
                 model_inputs["decoder_input_ids"] = decoder_input_ids
+        model_inputs['sentence_embedding_for_gate'] = sentence_embedding_for_gate
+        model_inputs['cluster_embedding_for_gate'] = cluster_embedding_for_gate
+
 
             #self._save_samples(model_inputs, sources, labels)
         '''

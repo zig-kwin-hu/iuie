@@ -215,6 +215,8 @@ class MOELinear(nn.Linear, MOELoraLayer):
         self.gate_loss_type = kwargs.pop("gate_loss_type", None)
         self.add_noise = kwargs.pop("add_noise", None)
         self.regularized = kwargs.pop("regularized", None)
+        self.existing_gate_weight = kwargs.pop("existing_gate_weight", None)
+        self.gate_embedding_dim = kwargs.pop("gate_embedding_dim", None)
         # this gets the init from nn.Linear's super perspective, i.e.
         # nn.Module.__init__, which should always be called
         super(nn.Linear, self).__init__()
@@ -231,8 +233,12 @@ class MOELinear(nn.Linear, MOELoraLayer):
             selected_gate_class = {'TopKGate': TopKGate}[self.gate_type]
         else:
             raise ValueError(f"Gate type {self.gate_type} not supported")
-        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.in_features, self.expert_num, self.moe_topk, self.gate_loss_type, self.add_noise,\
+        if self.gate_embedding_dim is None:
+            self.gate_embedding_dim = self.in_features
+        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.gate_embedding_dim, self.expert_num, self.moe_topk, self.gate_loss_type, self.add_noise,\
                                                                                regularized=self.regularized)}))
+        if self.existing_gate_weight is not None:
+            self.lora_gate[adapter_name].set_gate_weight(self.existing_gate_weight)
         
         # Freezing the pre-trained weight matrix
 
@@ -325,7 +331,7 @@ class MOELinear(nn.Linear, MOELoraLayer):
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         previous_dtype = x.dtype
-
+        embedding_for_gate = kwargs.get("embedding_for_gate", None)
         if self.disable_adapters:
             if self.merged:
                 self.unmerge()
@@ -344,7 +350,10 @@ class MOELinear(nn.Linear, MOELoraLayer):
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.loraA[0].weight.dtype)
                 moe_output = lora_B(lora_A(dropout(x)))# (batch_size, seq_len, expert_num, out_features)
-                gate_output = self.lora_gate[active_adapter](x)
+                if embedding_for_gate is not None:
+                    gate_output = self.lora_gate[active_adapter](embedding_for_gate)
+                else:
+                    gate_output = self.lora_gate[active_adapter](x)
                 expert_weight = gate_output['scores']
                 weighted_moe_output = torch.sum(moe_output * expert_weight.unsqueeze(-1), dim=-2) # (batch_size, seq_len, out_features)
                 result += weighted_moe_output * scaling
@@ -375,6 +384,8 @@ class MOELinearWithUniversal(nn.Linear, MOELoraLayer):
         self.gate_loss_type = kwargs.pop("gate_loss_type", None)
         self.add_noise = kwargs.pop("add_noise", None)
         self.regularized = kwargs.pop("regularized", None)
+        self.existing_gate_weight = kwargs.pop("existing_gate_weight", None)
+        self.gate_embedding_dim = kwargs.pop("gate_embedding_dim", None)
         assert not self.regularized, "Universal expert is not supported for regularized gate"
         if self.expert_num is not None:
             self.expert_num = self.expert_num + 1# add one for universal expert
@@ -395,8 +406,12 @@ class MOELinearWithUniversal(nn.Linear, MOELoraLayer):
         else:
             raise ValueError(f"Gate type {self.gate_type} not supported")
         #minus one because the universal expert is not included in the gate
-        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.in_features, self.expert_num-1, self.moe_topk, self.gate_loss_type, self.add_noise, \
+        if self.gate_embedding_dim is None:
+            self.gate_embedding_dim = self.in_features
+        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.gate_embedding_dim, self.expert_num-1, self.moe_topk, self.gate_loss_type, self.add_noise, \
                                                                                regularized=self.regularized)}))
+        if self.existing_gate_weight is not None:
+            self.lora_gate[adapter_name].set_gate_weight(self.existing_gate_weight)
         
         # Freezing the pre-trained weight matrix
 
@@ -489,7 +504,7 @@ class MOELinearWithUniversal(nn.Linear, MOELoraLayer):
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         previous_dtype = x.dtype
-
+        embedding_for_gate = kwargs.get("embedding_for_gate", None)
         if self.disable_adapters:
             if self.merged:
                 self.unmerge()
@@ -510,7 +525,10 @@ class MOELinearWithUniversal(nn.Linear, MOELoraLayer):
                 moe_output = lora_B(lora_A(dropout(x)))# (batch_size, seq_len, expert_num+1, out_features)
                 non_universal_moe_output = moe_output[:, :, 1:, :]
                 universal_moe_output = moe_output[:, :, 0, :]
-                gate_output = self.lora_gate[active_adapter](x)
+                if embedding_for_gate is not None:
+                    gate_output = self.lora_gate[active_adapter](embedding_for_gate)
+                else:
+                    gate_output = self.lora_gate[active_adapter](x)
                 expert_weight = gate_output['scores']# (batch_size, seq_len, expert_num) 
                 weighted_non_universal_moe_output = torch.sum(non_universal_moe_output * expert_weight.unsqueeze(-1), dim=-2) # (batch_size, seq_len, out_features)
                 weighted_universal_moe_output = universal_moe_output * (1 - torch.sum(expert_weight, dim=-1, keepdim=True))

@@ -29,8 +29,9 @@ class TopKGate(nn.Module):
             self.loss_function = lambda x: 0.
         self.add_noise = add_noise
         self.regularized = regularized
-            
-    
+    def set_gate_weight(self, weight):
+        assert weight.size(0) == self.expert_num
+        self.GateL.weight.data = weight.clone().detach().requires_grad_(True).to(self.GateL.weight.data.device).to(self.GateL.weight.data.dtype)
     def forward(self, x):
 
         logits = self.GateL(x)

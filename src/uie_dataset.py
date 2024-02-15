@@ -87,6 +87,7 @@ class UIEConfig(datasets.BuilderConfig):
             ordered_prompt=True,
             model_name_or_path=None,
             model_cache_dir=None,
+            embedding_prompt=None,
             **kwargs
     ):
         super().__init__(*args, **kwargs)
@@ -105,6 +106,7 @@ class UIEConfig(datasets.BuilderConfig):
         self.ordered_prompt = ordered_prompt
         self.model_name_or_path = model_name_or_path
         self.model_cache_dir = model_cache_dir
+        self.embedding_prompt = embedding_prompt
 
     def _parse_instruction(self, instruction_file):
         """
@@ -215,7 +217,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                         "label": datasets.Value("string"),
                         "instruction": datasets.Value("string"),
                         "ground_truth": datasets.Value("string"),
-                        "answer_prefix": datasets.Value("string")
+                        "answer_prefix": datasets.Value("string"),
+                        "unique_id": datasets.Value("string")
                     },
                     "input_ids": datasets.Sequence(datasets.Value("int64")),
                 }
@@ -283,12 +286,24 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
             return random.choice(task_instructions)
 
     def _get_prompt(self, instruction, labels_str=None, explain=None):
-        if explain:
-            prompt = self.config.prompt['prompt_w_explain'].format(instruction=instruction, text='{0}', explain=explain)
-        elif labels_str:
-            prompt = self.config.prompt['prompt_option'].format(instruction=instruction, options=labels_str, text='{0}')
+        if self.config.embedding_prompt is None:
+            if explain:
+                prompt = self.config.prompt['prompt_w_explain'].format(instruction=instruction, text='{0}', explain=explain)
+            elif labels_str:
+                prompt = self.config.prompt['prompt_option'].format(instruction=instruction, options=labels_str, text='{0}')
+            else:
+                prompt = self.config.prompt['prompt_no_option'].format(instruction=instruction, text='{0}')
         else:
-            prompt = self.config.prompt['prompt_no_option'].format(instruction=instruction, text='{0}')
+            if self.config.embedding_prompt == "iop":
+                prompt = self.config.prompt['prompt_gen_embedding_iop'].format(instruction=instruction, options=labels_str)
+            elif self.config.embedding_prompt == 'io':
+                prompt = self.config.prompt['prompt_gen_embedding_io'].format(instruction=instruction, options=labels_str)
+            elif self.config.embedding_prompt == 'iota':
+                prompt = self.config.prompt['prompt_gen_embedding_iota'].format(instruction=instruction, options=labels_str, text='{0}')
+            else:
+                raise ValueError("Invalid embedding prompt type {}, please check your config file {}"
+                                 .format(self.config.embedding_prompt, self.config.prompt_file))
+
         return prompt
         
     def _sampling_dataset(self, instances, sampling_strategy, max_num_instances):
@@ -573,7 +588,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                     "label": label,
                     "ground_truth": label,
                     "instruction": instruction,
-                    "answer_prefix": self.config.prompt["response_split"]
+                    "answer_prefix": self.config.prompt["response_split"],
+                    "unique_id": instance.get("unique_id", None),
                 }
                 
                 yield example
@@ -649,7 +665,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 "label": label,
                 "ground_truth": label,
                 "instruction": instruction,
-                "answer_prefix": self.config.prompt["response_split"]
+                "answer_prefix": self.config.prompt["response_split"],
+                "unique_id": instance.get("unique_id", None),
             }
 
             if random.random() < AUX_PROB:
@@ -789,7 +806,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 "label": label,
                 "ground_truth": ground_truth,
                 "instruction": instruction,
-                "answer_prefix": self.config.prompt["response_split"]
+                "answer_prefix": self.config.prompt["response_split"],
+                "unique_id": instance.get("unique_id", None),
             }
 
             yield example
@@ -836,7 +854,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 "label": label,
                 "ground_truth": label,
                 "instruction": instruction,
-                "answer_prefix": self.config.prompt["response_split"]
+                "answer_prefix": self.config.prompt["response_split"],
+                "unique_id": instance.get("unique_id", None),
             }
 
             yield example

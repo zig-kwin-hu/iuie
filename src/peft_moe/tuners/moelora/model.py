@@ -162,6 +162,9 @@ class MOELoraModel(BaseTuner):
             'gate_loss_type': lora_config.gate_loss_type,
             'add_noise': lora_config.add_noise,
             'regularized': lora_config.regularized,
+            'existing_gate_weight': lora_config.existing_gate_weight,
+            'gate_embedding_dim': lora_config.gate_embedding_dim,
+
         }
         kwargs["loaded_in_8bit"] = optional_kwargs.pop("loaded_in_8bit", False)
         kwargs["loaded_in_4bit"] = optional_kwargs.pop("loaded_in_4bit", False)

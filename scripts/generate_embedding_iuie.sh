@@ -5,7 +5,7 @@ epoch_map=([with_sentence_iuie_mean_of_encoder]=30 [NYT11_NYT]=10 [semval-RE]=10
 # declare -A TASK2DATASETS=([re]="conll04 SciERC NYT11 semval-RE ADE_corpus-1500" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="CoNLL_2003 ACE_2004 ACE_2005")
 # DONE : [ner] = ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7_sample_15000 WikiANN_en WikiNeural
 #declare -A TASK2DATASETS=([re]="ADE_corpus NYT11_sample_30000 New-York-Times-RE_sample_30000 semval-RE conll04 GIDS SciERC kbp37" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
-declare -A TASK2DATASETS=([ner]="plo_all" [re]="ADE_corpus" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
+declare -A TASK2DATASETS=([ner]="PolyglotNER_sample_20000 Broad_Tweet_Corpus WikiANN_en WikiNeural_sample_20000" [re]="ADE_corpus" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
 
 set -x
 
@@ -20,24 +20,23 @@ lora_r=16
 lora_alpha=16
 add_name=False
 moe_topk=1
-moe_lora=True
+moe_lora=False
 gate_type=TopKGate
 gate_loss_type=router_z
 gate_loss_weight=1e-2
 add_noise=True
 regularized=False
 with_universal=False
-use_cluster_embedding_for_gate=True
-cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/cluster_embeddings_InstructUIE_iota_mean_of_encoder_eval_0.npy
-cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/cluster_uid2index_InstructUIE_iota_mean_of_encoder_eval_0.json
-cluster_short_name=$(echo "$cluster_embedding_path" | awk -F'/' '{print $NF}' | awk -F'.npy' '{print $1}')
+use_cluster_embedding_for_gate=False
+cluster_embedding_path=None
+cluster_uid2index_path=None
+cluster_short_name=cluster_random_4096_4
 #--per_device_train_batch_size 10 \
 #--gradient_accumulation_steps 3 \
 #model_name_or_path=google/flan-t5-xl
 model_name_or_path=ZWK/InstructUIE
-existing_gate_weight=data/ie_instruct_unique_id/cluster_embeddings/cluster_embeddings_InstructUIE_iota_mean_of_encoder_eval_0.npy
+existing_gate_weight=None
 name_after_slash=$(echo "$model_name_or_path" | cut -d'/' -f2)
-gate_weight_initalized_from_existing=True
 
 # for TASK in re ner eet eea 
 for TASK_CONFIG in ner
@@ -49,25 +48,8 @@ do
         else
             over_sample=False
         fi
-        if [[ "${add_name}" == "True" ]]; then
-            if [[ "${moe_lora}" == "True" ]]; then
-                output_dir="output_ssd2/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${cluster_short_name}/${name_after_slash}_addname_${lora_r}_${expert_num}_${moe_topk}_${gate_loss_type}_${add_noise}_${regularized}_${with_universal}_${gate_weight_initalized_from_existing}"
-            else
-                output_dir="output_ssd2${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_addname_${lora_r}"
-            fi
-        else
-            if [[ "${moe_lora}" == "True" ]]; then
-                output_dir="output_ssd2/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${cluster_short_name}/${name_after_slash}_${lora_r}_${expert_num}_${moe_topk}_${gate_loss_type}_${add_noise}_${regularized}_${with_universal}_${gate_weight_initalized_from_existing}"
-            else
-                output_dir="output_ssd2/${TASK_CONFIG}_lora/${DATASET_CONFIG}/${name_after_slash}_${lora_r}"
-            fi
-        fi
-        if [[ ${lora_alpha} == 0 ]]; then
-            output_dir="output_ssd2/${TASK_CONFIG}_notraining/${DATASET_CONFIG}/${name_after_slash}"
-        fi
+        output_dir="output_ssd2/embedding/${TASK_CONFIG}/${DATASET_CONFIG}/"
         CUDA_VISIBLE_DEVICES=0,1,2,3 python src/run_uie.py \
-        --do_train \
-        --do_eval \
         --do_predict \
         --num_beams 1 \
         --repetition_penalty 1.0 \
@@ -111,13 +93,12 @@ do
         --metric_for_best_model eval_f1 \
         --early_stopping_patience 5 \
         --only_save_best_model True \
-        --lora_target_modules q,v \
         --lora_r ${lora_r} \
         --lora_alpha ${lora_alpha} \
         --expert_num ${expert_num} \
         --moe_topk ${moe_topk} \
         --gate_loss_weight ${gate_loss_weight} \
-        --use_test_as_eval \
+        --use_test_as_eval False \
         --group_by_length False \
         --save_lora_weights_only \
         --predict_each_dataset_with_best False \
@@ -136,6 +117,9 @@ do
         --use_cluster_embedding_for_gate ${use_cluster_embedding_for_gate} \
         --cluster_embedding_path ${cluster_embedding_path} \
         --cluster_uid2index_path ${cluster_uid2index_path} \
+        --embedding_prompt iota \
+        --embedding_type mean_of_encoder \
+        --embedding_sets eval \
         #--resume_from_checkpoint /home/zkhu143/iuie/output/ner_lora/plo_all/flan-t5-xl/checkpoint-30 \
         #--evaluation_strategy epoch \
         #--save_strategy epoch \

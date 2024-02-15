@@ -196,7 +196,6 @@ class SaveBestModelsCallback(TrainerCallback):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.best_metrics = {}
-        print('best model callback initialized')
 
     def on_evaluate(self, args, state, control, metrics=None, model = None, trainer = None, trial = None, non_saving_datasets=[], **kwargs):
         assert isinstance(trainer, UIETrainer)
@@ -236,7 +235,6 @@ class SaveBestModelsCallback(TrainerCallback):
 class EarlyStoppingCallbackWithLog(EarlyStoppingCallback):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        print('early stopping callback initialized\n\n')
     def check_metric_value(self, args, state, control, metric_value):
         # best_metric is set by code for load_best_model
         operator = np.greater if args.greater_is_better else np.less
@@ -301,7 +299,6 @@ class UIETrainer(Seq2SeqTrainer):
         self.add_callback(PrinterCallback if self.args.disable_tqdm else DEFAULT_PROGRESS_CALLBACK)
         
         self.non_saving_datasets = non_saving_datasets
-        print('init self.args.should_save',self.args.should_save)
 
         #init params for predictions
         self.predict_dataset = predict_dataset
@@ -309,6 +306,7 @@ class UIETrainer(Seq2SeqTrainer):
         self.num_beams = num_beams
         self.repetition_penalty = repetition_penalty
         self.pad_token_id = pad_token_id
+        
 
     # Rewrite the evaluation function, with customized call of evaluate, passing the trainer and trial object so that we can modify the save process.
     def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch, ignore_keys_for_eval):
@@ -780,11 +778,20 @@ class UIETrainer(Seq2SeqTrainer):
         #    }
         #print('gen_kwargs',gen_kwargs)
         #"/home/zkhu142/anaconda3/envs/llama/lib/python3.8/site-packages/transformers/generation/utils.py", line 1297, 
+        sentence_embedding_for_gate = inputs.pop("sentence_embedding_for_gate", None)
+        cluster_embedding_for_gate = inputs.pop("cluster_embedding_for_gate", None)
+        assert not (self.args.use_sentence_embedding_for_gate and self.args.use_cluster_embedding_for_gate)
+        embedding_for_gate = None
+        if sentence_embedding_for_gate is not None and self.args.use_sentence_embedding_for_gate:
+            embedding_for_gate = sentence_embedding_for_gate
+        elif cluster_embedding_for_gate is not None and self.args.use_cluster_embedding_for_gate:
+            embedding_for_gate = cluster_embedding_for_gate
         generated_tokens = self.model.generate(
             #**generation_inputs,
             #**gen_kwargs,
             input_ids=generation_inputs,
             generation_config=generation_config,
+            embedding_for_gate=embedding_for_gate,
         )
 
         bs, source_len = inputs['input_ids'].shape
@@ -805,7 +812,14 @@ class UIETrainer(Seq2SeqTrainer):
                     tasks = inputs.pop('task')
                     datasets = inputs.pop('dataset')
                     '''
-
+                    sentence_embedding_for_gate = inputs.pop("sentence_embedding_for_gate", None)
+                    cluster_embedding_for_gate = inputs.pop("cluster_embedding_for_gate", None)
+                    assert not (self.args.use_sentence_embedding_for_gate and self.args.use_cluster_embedding_for_gate)
+                    if sentence_embedding_for_gate is not None and self.args.use_sentence_embedding_for_gate:
+                        inputs['embedding_for_gate'] = sentence_embedding_for_gate
+                    elif cluster_embedding_for_gate is not None and self.args.use_cluster_embedding_for_gate:
+                        inputs['embedding_for_gate'] = cluster_embedding_for_gate
+                    
                     outputs = model(**inputs)
                     if self.args.embedding_type is not None:
                         encoder_last_h = outputs["encoder_last_hidden_state"]
@@ -1173,6 +1187,13 @@ class UIETrainer(Seq2SeqTrainer):
             labels = inputs.pop("labels")
         else:
             labels = None
+        sentence_embedding_for_gate = inputs.pop("sentence_embedding_for_gate", None)
+        cluster_embedding_for_gate = inputs.pop("cluster_embedding_for_gate", None)
+        assert not (self.args.use_sentence_embedding_for_gate and self.args.use_cluster_embedding_for_gate)
+        if sentence_embedding_for_gate is not None and self.args.use_sentence_embedding_for_gate:
+            inputs['embedding_for_gate'] = sentence_embedding_for_gate
+        elif cluster_embedding_for_gate is not None and self.args.use_cluster_embedding_for_gate:
+            inputs['embedding_for_gate'] = cluster_embedding_for_gate
         outputs = model(**inputs)
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
