@@ -18,9 +18,9 @@ port=$(shuf -i25000-30000 -n1)
 expert_num=4
 lora_r=16
 lora_alpha=16
-add_name=True
+add_name=False
 moe_topk=1
-moe_lora=True
+moe_lora=False
 gate_type=TopKGate
 gate_loss_type=router_z
 gate_loss_weight=1e-2
@@ -70,8 +70,6 @@ do
             output_dir="output_ssd2/${TASK_CONFIG}_notraining/${DATASET_CONFIG}/${name_after_slash}"
         fi
         CUDA_VISIBLE_DEVICES=0,1,2,3 python src/run_uie.py \
-        --do_train \
-        --do_eval \
         --do_predict \
         --num_beams 1 \
         --repetition_penalty 1.0 \
@@ -125,7 +123,7 @@ do
         --group_by_length False \
         --save_lora_weights_only \
         --predict_each_dataset_with_best False \
-        --auto_find_best_lora_checkpoint False \
+        --auto_find_best_lora_checkpoint True \
         --save_strategy steps \
         --save_steps 100 \
         --evaluation_strategy steps \

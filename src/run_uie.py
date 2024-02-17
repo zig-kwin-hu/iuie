@@ -810,7 +810,7 @@ def main():
     #         min_weight_score=-1.5, max_weight_score=1.5
     #     )
     topredict_sets = ['test', 'eval'] if training_args.test_with_eval else ['test']
-    if training_args.embedding_sets is not None:
+    if training_args.embedding_sets is not None and len(training_args.embedding_sets) > 0:
         topredict_sets = training_args.embedding_sets.split(',')
     if training_args.do_train or 'train' in topredict_sets:
         if "train" not in raw_datasets:
