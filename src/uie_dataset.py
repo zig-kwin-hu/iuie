@@ -904,7 +904,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 "label": label,
                 "ground_truth": label,
                 "instruction": instruction,
-                "answer_prefix": self.config.prompt["response_split"]
+                "answer_prefix": self.config.prompt["response_split"],
+                "unique_id": instance.get("unique_id", None),
             }
 
             yield example
@@ -968,7 +969,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
                 "label": label,
                 "ground_truth": label,
                 "instruction": instruction,
-                "answer_prefix": self.config.prompt["response_split"]
+                "answer_prefix": self.config.prompt["response_split"],
+                "unique_id": instance.get("unique_id", None),
             }
             yield example
     

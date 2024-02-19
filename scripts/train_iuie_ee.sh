@@ -5,7 +5,7 @@ epoch_map=([with_sentence_iuie_mean_of_encoder]=30 [NYT11_NYT]=10 [semval-RE]=10
 # declare -A TASK2DATASETS=([re]="conll04 SciERC NYT11 semval-RE ADE_corpus-1500" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="CoNLL_2003 ACE_2004 ACE_2005")
 # DONE : [ner] = ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7_sample_15000 WikiANN_en WikiNeural
 #declare -A TASK2DATASETS=([re]="ADE_corpus NYT11_sample_30000 New-York-Times-RE_sample_30000 semval-RE conll04 GIDS SciERC kbp37" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
-declare -A TASK2DATASETS=([ner]="plo_all" [re]="all" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
+declare -A TASK2DATASETS=([eet]="all" [eea]="all" [ner]="plo_all" [re]="all" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT")
 
 set -x
 
@@ -15,10 +15,10 @@ export TRANSFORMERS_CACHE=./huggingface
 port=$(shuf -i25000-30000 -n1)
 
 #model_name_or_path=ZWK/InstructUIE
-expert_num=4
+expert_num=3
 lora_r=16
 lora_alpha=16
-add_name=True
+add_name=False
 moe_topk=1
 moe_lora=True
 gate_type=TopKGate
@@ -30,25 +30,30 @@ with_universal=False
 use_cluster_embedding_for_gate=False
 cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/cluster_embeddings_InstructUIE_iota_mean_of_encoder_eval_0.npy
 cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/cluster_uid2index_InstructUIE_iota_mean_of_encoder_eval_0.json
-cluster_short_name=$(echo "$cluster_embedding_path" | awk -F'/' '{print $NF}' | awk -F'.npy' '{print $1}')
+if [[ "${use_cluster_embedding_for_gate}" == "True" ]]; then
+    cluster_short_name=$(echo "$cluster_embedding_path" | awk -F'/' '{print $NF}' | awk -F'.npy' '{print $1}')
+else
+    cluster_short_name='no_cluster_embedding_for_gate'
+fi
 #--per_device_train_batch_size 10 \
 #--gradient_accumulation_steps 3 \
 #model_name_or_path=google/flan-t5-xl
 model_name_or_path=ZWK/InstructUIE
-existing_gate_weight=data/ie_instruct_unique_id/cluster_embeddings/cluster_embeddings_InstructUIE_iota_mean_of_encoder_eval_0.npy
+existing_gate_weight=None
+gate_weight_initalized_from_existing=False
 name_after_slash=$(echo "$model_name_or_path" | cut -d'/' -f2)
-gate_weight_initalized_from_existing=True
 
 # for TASK in re ner eet eea 
-for TASK_CONFIG in re
+for TASK_CONFIG in eea eet
 do
     for DATASET_CONFIG in ${TASK2DATASETS[${TASK_CONFIG}]}
     do
         if [[ "$DATASET_CONFIG" =~ ^(plo_all|re_all|disease|all)$ ]]; then
-            over_sample=True
+            over_sample=False
         else
             over_sample=False
         fi
+
         if [[ "${add_name}" == "True" ]]; then
             if [[ "${moe_lora}" == "True" ]]; then
                 output_dir="output_ssd2/${TASK_CONFIG}_moelora/${DATASET_CONFIG}/${cluster_short_name}/${name_after_slash}_addname_${lora_r}_${expert_num}_${moe_topk}_${gate_loss_type}_${add_noise}_${regularized}_${with_universal}_${gate_weight_initalized_from_existing}"
@@ -91,9 +96,9 @@ do
         --max_source_length 256 \
         --max_target_length 50 \
         --generation_max_length 50 \
-        --max_num_instances_per_task 9000 \
-        --max_num_instances_per_eval_task 500 \
-        --max_num_instances_per_predict_task 500 \
+        --max_num_instances_per_task -1 \
+        --max_num_instances_per_eval_task -1 \
+        --max_num_instances_per_predict_task -1 \
         --add_task_name ${add_name} \
         --add_dataset_name ${add_name} \
         --num_examples 0 \

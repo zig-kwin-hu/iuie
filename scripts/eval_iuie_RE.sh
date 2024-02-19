@@ -39,11 +39,9 @@ fi
 #--gradient_accumulation_steps 3 \
 #model_name_or_path=google/flan-t5-xl
 model_name_or_path=ZWK/InstructUIE
-#existing_gate_weight=data/ie_instruct_unique_id/cluster_embeddings/cluster_embeddings_InstructUIE_iota_mean_of_encoder_eval_0.npy
 existing_gate_weight=None
 gate_weight_initalized_from_existing=False
 name_after_slash=$(echo "$model_name_or_path" | cut -d'/' -f2)
-
 
 # for TASK in re ner eet eea 
 for TASK_CONFIG in re
