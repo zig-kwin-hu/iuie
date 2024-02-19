@@ -7,5 +7,6 @@
     "prompt_gen_embedding_iop": "{instruction} Option: {options} . The whole instruction can be summarized in a single word \"",
     "prompt_gen_embedding_io": "{instruction} Option: {options}",
     "prompt_gen_embedding_iota": "{instruction} Option: {options} \nText: {text} \nAnswer:",
+    "prompt_gen_embedding_iotap": "{instruction} Option: {options} \nText: {text} \nAnswer: The whole instruction can be summarized in a single word \"",
     "response_split": "Answer:"    
 }

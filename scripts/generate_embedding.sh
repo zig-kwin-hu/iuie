@@ -14,7 +14,7 @@ model_name_or_path=ZWK/InstructUIE
 
 for TASK_CONFIG in EMBED_INSTRUCTION_with_sentence
 do
-    CUDA_VISIBLE_DEVICES=1,2,3 python src/generate_embedding.py \
+    CUDA_VISIBLE_DEVICES=0,1,2,3 python src/generate_embedding.py \
     --do_predict \
     --model_name_or_path ${model_name_or_path} \
     --data_dir ./data/ie_instruct \

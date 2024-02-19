@@ -46,7 +46,7 @@ from transformers import (
 from transformers.file_utils import is_offline_mode
 from transformers.trainer_utils import get_last_checkpoint
 
-from peft import (
+from peft_moe import (
     LoraConfig,
     TaskType,
     get_peft_model,
@@ -56,6 +56,7 @@ from peft import (
     set_peft_model_state_dict,
     PeftModel,
     AdaLoraConfig,
+    MOELoraConfig,
 )
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
@@ -63,12 +64,13 @@ from accelerate.utils import get_balanced_memory
 from model.bloom import BloomForCausalLM_WithLoss
 from model.codegen import CodeGenForCausalLM_WithLoss
 from model.gpt_neox import GPTNeoXForCausalLM_WithLoss
+from model.t5 import MOET5ForConditionalGeneration
 # from utils.lorahub import set_lorahub_model
 
 from uie_collator import DataCollatorForUIE
 from uie_dataset import gen_cache_path
 
-from uie_trainer import UIETrainer, DenserEvalCallback, SavePeftModelCallback, SaveMetricsCallback, skip_instructions, SaveBestModelsCallback, SkipEpochEvalCallback
+from uie_trainer import UIETrainer, DenserEvalCallback, SavePeftModelCallback, SaveMetricsCallback, skip_instructions, SaveBestModelsCallback, SkipEpochEvalCallback, EarlyStoppingCallbackWithLog
 from compute_metrics import compute_f1, compute_metrics, compute_grouped_metrics
 
 import json
@@ -115,6 +117,21 @@ def print_number_of_trainable_model_parameters(model):
             trainable_params += num_params
 
     return f"trainable model parameters: {trainable_params}\nall model parameters: {all_param}\npercentage of trainable model parameters: {100 * trainable_params / all_param:.2f}%"
+def merge_embeddings(uid2index, embeddings, datasets):
+    necessary_index = set()
+    for dataset in datasets:
+        for example in dataset:
+            uid = example['Instance']['unique_id']
+            index = uid2index[uid]
+            necessary_index.add(index)
+    necessary_index = list(necessary_index)
+    necessary_index.sort()
+    index2newindex = {index: i for i, index in enumerate(necessary_index)}
+    new_embeddings = embeddings[necessary_index]
+    new_uid2index = {uid: index2newindex[uid2index[uid]] for uid in uid2index}
+    new_embeddings = torch.nn.Parameter(torch.tensor(new_embeddings, dtype=torch.float32), requires_grad=False)
+    return new_uid2index, new_embeddings
+
 @dataclass
 class ModelArguments:
     """
@@ -193,6 +210,50 @@ class ModelArguments:
     use_flash_attention_2: Optional[bool] = field(
         default=False,
         metadata={"help": "If true, use flash attention 2."},
+    )
+    moe_lora: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If true, use moe lora."},
+    )
+    task_num: Optional[int] = field(
+        default=1,
+        metadata={"help": "The number of tasks."},
+    )
+    expert_num: Optional[int] = field(
+        default=1,
+        metadata={"help": "The number of experts in moe lora."},
+    )
+    task_embedding_dim: Optional[int] = field(
+        default=64,
+        metadata={"help": "The embedding dim for task embedding."},
+    )
+    moe_topk: Optional[int] = field(
+        default=-1,
+        metadata={"help": "The topk for moe lora."},
+    )
+    gate_type: Optional[str] = field(
+        default="TopKGate",
+        metadata={"help": "The gate type for moe lora."},
+    )
+    gate_loss_type: Optional[str] = field(
+        default="no_loss",
+        metadata={"help": "The gate loss type for moe lora."},
+    )
+    add_noise: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to add noise to the gate output."},
+    )
+    regularized: Optional[bool] = field(
+        default=True,
+        metadata={"help": "Whether to regularize the gate output."},
+    )
+    with_universal: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to add universal expert."},
+    )
+    existing_gate_weight: Optional[str] = field(
+        default=None,
+        metadata={"help": "The path of existing gate weight."},
     )
 
 
@@ -327,6 +388,11 @@ class DataTrainingArguments:
         default=True,
         metadata={"help": "Whether to sort prompt options in instruction."}
     )
+    embedding_prompt: Optional[str] = field(
+        default=None,
+        metadata={"help": "which prompt to use to collect the embedding of the input."}
+    )
+
 
 
 @dataclass
@@ -392,6 +458,49 @@ class UIETrainingArguments(Seq2SeqTrainingArguments):
         default=False,
         metadata={"help": "If true, automatically find the best lora checkpoint."},
     )
+    early_stopping_patience: Optional[int] = field(
+        default=0,
+        metadata={"help": "If specified, the model will do early stopping."},
+    )
+    gate_loss_weight: Optional[float] = field(
+        default=1e-2,
+        metadata={"help": "The weight for gate loss."},
+    ),
+    use_sentence_embedding_for_gate: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If true, use sentence embedding for gate."},
+    )
+    use_cluster_embedding_for_gate: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If true, use cluster embedding for gate."},
+    )
+    cluster_embedding_path: Optional[str] = field( 
+        default=None,
+        metadata={"help": "The path of cluster embedding."},
+    )
+    sentence_embedding_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "The path of sentence embedding."},
+    )
+    cluster_uid2index_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "The path of cluster uid2index."},
+    )
+    sentence_uid2index_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "The path of sentence uid2index."},
+    )
+    embedding_sets: Optional[str] = field(
+        default='',
+        metadata={"help": "The sets to collect the embedding."},
+    )
+    write_gate_loads: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Write down the gate loads"},
+    )
+
+    
+
     
 
 
@@ -455,6 +564,7 @@ def main():
     
     if model_args.lora_moe_paths:
         model_args.lora_moe_paths = model_args.lora_moe_paths.split(',')
+    
 
     # Get the UIE dataset
     print('max num instances per eval task, max num instances per predict task')
@@ -476,6 +586,7 @@ def main():
         min_positive_labels=data_args.min_positive_labels,
         model_name_or_path=model_args.model_name_or_path,
         model_cache_dir=model_args.cache_dir,
+        embedding_prompt=data_args.embedding_prompt,
     )
     raw_datasets.cleanup_cache_files()
     print(data_cache_dir)
@@ -529,6 +640,11 @@ def main():
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
             )
+    elif any([k in model_args.model_name_or_path.lower() for k in ['t5', 'instructuie']]) and model_args.moe_lora:
+        model_class = MOET5ForConditionalGeneration
+        task_type = TaskType.SEQ_2_SEQ_LM
+        if not training_args.deepspeed:
+            device_map = "auto"
     else:
         model_class = AutoModelForSeq2SeqLM
         task_type = TaskType.SEQ_2_SEQ_LM
@@ -577,7 +693,31 @@ def main():
         )
 
     if training_args.use_lora or model_args.use_ada_lora:
-        if not model_args.use_ada_lora:
+        if model_args.moe_lora:
+            existing_gate_weight, gate_embedding_dim = None, None
+            if type(model_args.existing_gate_weight) == str and os.path.exists(model_args.existing_gate_weight):
+                existing_gate_weight = torch.tensor(np.load(model_args.existing_gate_weight))
+                gate_embedding_dim = existing_gate_weight.shape[1]
+            config = MOELoraConfig(
+                r=model_args.lora_r,
+                lora_alpha=model_args.lora_alpha,
+                target_modules=model_args.lora_target_modules,
+                lora_dropout=model_args.lora_dropout,
+                bias="none",
+                task_type=task_type,
+                expert_num=model_args.expert_num,
+                task_num=model_args.task_num,
+                task_embedding_dim=model_args.task_embedding_dim,
+                moe_topk=model_args.moe_topk,
+                gate_type=model_args.gate_type,
+                gate_loss_type=model_args.gate_loss_type,
+                add_noise=model_args.add_noise,
+                regularized=model_args.regularized,
+                with_universal=model_args.with_universal,
+                existing_gate_weight=existing_gate_weight,
+                gate_embedding_dim=gate_embedding_dim,
+            )
+        elif not model_args.use_ada_lora:
             config = LoraConfig(
                 r=model_args.lora_r,
                 lora_alpha=model_args.lora_alpha,
@@ -673,15 +813,17 @@ def main():
     #         weight_strategy='random',
     #         min_weight_score=-1.5, max_weight_score=1.5
     #     )
-
-    if training_args.do_train:
+    topredict_sets = ['test', 'eval'] if training_args.test_with_eval else ['test']
+    if training_args.embedding_sets is not None and len(training_args.embedding_sets) > 0:
+        topredict_sets = training_args.embedding_sets.split(',')
+    if training_args.do_train or 'train' in topredict_sets:
         if "train" not in raw_datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = raw_datasets["train"]
         if data_args.max_train_samples is not None:
             train_dataset = train_dataset.select(range(data_args.max_train_samples))
 
-    if training_args.do_eval:
+    if training_args.do_eval or 'eval' in topredict_sets:
         if "validation" not in raw_datasets:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = raw_datasets["validation"]
@@ -690,7 +832,7 @@ def main():
     else:
         training_args.metric_for_best_model = None
 
-    if training_args.do_predict:
+    if training_args.do_predict or 'test' in topredict_sets:
         if "test" not in raw_datasets:
             raise ValueError("--do_predict requires a test dataset")
         predict_dataset = raw_datasets["test"]
@@ -700,6 +842,23 @@ def main():
         eval_dataset = copy.deepcopy(predict_dataset)
     # Data collator
     label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
+    uid2sentid=None
+    uid2clusterid=None
+    sentence_embeddings_for_gate = None
+    cluster_embeddings_for_gate  = None
+    if training_args.use_cluster_embedding_for_gate:
+        uid2clusterid = json.load(open(training_args.cluster_uid2index_path))
+        cluster_embeddings_for_gate = np.load(training_args.cluster_embedding_path)
+        cluster_embeddings_for_gate = torch.nn.Parameter(torch.tensor(cluster_embeddings_for_gate, dtype=torch.float32), requires_grad=False)
+        print('before merging embeddings', cluster_embeddings_for_gate.shape, len(uid2clusterid))
+        uid2clusterid, cluster_embeddings_for_gate = merge_embeddings(uid2clusterid, cluster_embeddings_for_gate, [train_dataset, eval_dataset, predict_dataset])
+        print('after merging embeddings', cluster_embeddings_for_gate.shape, len(uid2clusterid))
+    if training_args.use_sentence_embedding_for_gate:
+        uid2sentid = json.load(open(training_args.sentence_uid2index_path))
+        sentence_embeddings_for_gate = np.load(training_args.sentence_embedding_path)
+        sentence_embeddings_for_gate = torch.nn.Parameter(torch.tensor(sentence_embeddings_for_gate, dtype=torch.float32), requires_grad=False)
+        uid2sentid, sentence_embeddings_for_gate = merge_embeddings(uid2sentid, sentence_embeddings_for_gate, [train_dataset, eval_dataset, predict_dataset])
+    
     data_collator = DataCollatorForUIE(
         tokenizer,
         model=model,
@@ -713,7 +872,12 @@ def main():
         common_dataset_name=data_args.common_dataset_name,
         num_examples=data_args.num_examples,
         input_record_file=data_args.input_record_file,
-        return_loss_mask=not 'llama' in model_args.model_name_or_path.lower()
+        return_loss_mask=not 'llama' in model_args.model_name_or_path.lower(),
+        uid2sentid=uid2sentid,
+        uid2clusterid=uid2clusterid, 
+        sentence_embeddings_for_gate = sentence_embeddings_for_gate,
+        cluster_embeddings_for_gate = cluster_embeddings_for_gate,
+        write_gate_loads=training_args.write_gate_loads,
     )
     
     # we don't want to remove unused columns because we will prepare each batch during training,
@@ -787,6 +951,8 @@ def main():
         assert training_args.evaluation_strategy == 'epoch', "skip_epoch_eval only works with epoch evaluation strategy"
         assert training_args.save_strategy == 'epoch', "skip_epoch_eval only works with epoch save strategy"
         callbacks.append(SkipEpochEvalCallback)
+    if training_args.early_stopping_patience > 0:
+        callbacks.append(EarlyStoppingCallbackWithLog(early_stopping_patience=training_args.early_stopping_patience))
     
     max_new_tokens = (
         training_args.generation_max_length
@@ -796,7 +962,6 @@ def main():
 
     num_beams = data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams
     repetition_penalty = data_args.repetition_penalty
-
     trainer = UIETrainer(
         model=model,
         args=training_args,
@@ -805,7 +970,7 @@ def main():
         predict_dataset = predict_dataset if training_args.do_predict else None,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        compute_metrics=compute_f1_metrics,
+        compute_metrics=compute_f1_metrics if training_args.embedding_type is None else None,
         callbacks=callbacks,
         max_new_tokens=max_new_tokens,
         num_beams=num_beams,
@@ -855,8 +1020,8 @@ def main():
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
         else:
             train_result = trainer.train()
-        if not training_args.no_saving:
-            trainer.save_model()  # Saves the tokenizer too for easy upload
+        #if not training_args.no_saving:
+            #trainer.save_model()  # Saves the tokenizer too for easy upload
 
         metrics = train_result.metrics
         max_train_samples = (
@@ -922,7 +1087,7 @@ def main():
                     eval_dataset=eval_dataset if training_args.do_eval else None,
                     tokenizer=tokenizer,
                     data_collator=data_collator,
-                    compute_metrics=compute_f1_metrics,
+                    compute_metrics=compute_f1_metrics if training_args.embedding_type is None else None,
                     callbacks=callbacks,
                     max_new_tokens=max_new_tokens,
                     num_beams=num_beams,
@@ -953,41 +1118,35 @@ def main():
                     with open(path, "w") as f:
                         json.dump(metrics, f, indent=4, sort_keys=True)
         else:
-            predict_results = trainer.predict(
-                predict_dataset,
-                metric_key_prefix="predict",
-                max_new_tokens=max_new_tokens,
-                num_beams=num_beams,
-                repetition_penalty=repetition_penalty,
-                pad_token_id=tokenizer.pad_token_id
-            )
-            metrics = predict_results.metrics
-            max_predict_samples = (
-                data_args.max_predict_samples if data_args.max_predict_samples is not None else len(predict_dataset)
-            )
-            metrics["predict_samples"] = min(max_predict_samples, len(predict_dataset))
-            trainer.log(metrics)
-            trainer.log_metrics("predict", metrics)
-            trainer.save_metrics("predict", metrics)
-            all_metrics.update(metrics)
-
-            if training_args.test_with_eval:
+            dataset_dict = {'train': train_dataset if 'train' in topredict_sets else None,
+                            'eval': eval_dataset if 'eval' in topredict_sets else None,
+                            'test': predict_dataset if 'test' in topredict_sets else None,
+                            }
+            model_name = model_args.model_name_or_path.split('/')[-1]
+            if training_args.embedding_type is not None:
+                if training_args.use_test_as_eval and 'eval' in topredict_sets:
+                    topredict_sets.pop(topredict_sets.index('eval'))
+            for topredict_set in topredict_sets:
                 predict_results = trainer.predict(
-                    eval_dataset,
-                    metric_key_prefix="eval",
+                    dataset_dict[topredict_set],
+                    metric_key_prefix=topredict_set,
                     max_new_tokens=max_new_tokens,
                     num_beams=num_beams,
                     repetition_penalty=repetition_penalty,
                     pad_token_id=tokenizer.pad_token_id
                 )
+                if training_args.embedding_type is not None:
+                    embeddings = predict_results.embeddings
+                    np.save(os.path.join(training_args.output_dir, 'embeddings_{}_{}_{}_{}_{}.npy'.format(model_name, data_args.embedding_prompt, training_args.embedding_type, topredict_set, data_args.num_examples)), embeddings)
+                    continue
                 metrics = predict_results.metrics
                 max_predict_samples = (
                     data_args.max_predict_samples if data_args.max_predict_samples is not None else len(predict_dataset)
                 )
                 metrics["predict_samples"] = min(max_predict_samples, len(predict_dataset))
                 trainer.log(metrics)
-                trainer.log_metrics("eval", metrics)
-                trainer.save_metrics("eval", metrics)
+                trainer.log_metrics(topredict_set, metrics)
+                trainer.save_metrics(topredict_set, metrics)
                 all_metrics.update(metrics)
 
     if training_args.do_demo:

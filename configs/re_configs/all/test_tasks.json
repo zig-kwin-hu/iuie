@@ -2,11 +2,27 @@
     "RE": [
         {
             "sampling strategy": "full",
-            "dataset name": "ADE_corpus-1500"
+            "dataset name": "ADE_corpus"
         },
         {
             "sampling strategy": "full",
-            "dataset name": "NYT11-1500"
+            "dataset name": "conll04"
+        },
+        {
+            "sampling strategy": "full",
+            "dataset name": "GIDS"
+        },
+        {
+            "sampling strategy": "full",
+            "dataset name": "kbp37"
+        },
+        {
+            "sampling strategy": "full",
+            "dataset name": "NYT11"
+        },
+        {
+            "sampling strategy": "full",
+            "dataset name": "New-York-Times-RE"
         },
         {
             "sampling strategy": "full",
@@ -14,7 +30,7 @@
         },
         {
             "sampling strategy": "full",
-            "dataset name": "semval-RE-1500"
+            "dataset name": "semval-RE"
         }
     ]
 }

@@ -45,7 +45,7 @@ from transformers import (
 from transformers.file_utils import is_offline_mode
 from transformers.trainer_utils import get_last_checkpoint
 
-from peft import (
+from peft_moe import (
     LoraConfig,
     TaskType,
     get_peft_model,
