@@ -1,19 +1,19 @@
 {
     "NER": [
         {
-            "sampling strategy": "random",
+            "sampling strategy": "full",
             "dataset name": "PolyglotNER_sample_20000"
         },
         {
-            "sampling strategy": "random",
+            "sampling strategy": "full",
             "dataset name": "Broad_Tweet_Corpus"
         },
         {
-            "sampling strategy": "random",
+            "sampling strategy": "full",
             "dataset name": "WikiANN_en"
         },
         {
-            "sampling strategy": "random",
+            "sampling strategy": "full",
             "dataset name": "WikiNeural_sample_20000"
         }
     ]

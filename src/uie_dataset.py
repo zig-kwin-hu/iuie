@@ -306,13 +306,14 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
 
         return prompt
         
-    def _sampling_dataset(self, instances, sampling_strategy, max_num_instances):
+    def _sampling_dataset(self, instances, sampling_strategy, max_num_instances, is_train=True):
         print("Sampling strategy: {}".format(sampling_strategy))
         print('Total instances: {}'.format(len(instances)))
         if max_num_instances is not None and max_num_instances >= 0 \
-            and len(instances) > max_num_instances and max_num_instances is not None: #and sampling_strategy == 'random'
+            and len(instances) > max_num_instances: #and sampling_strategy == 'random'
             instances = instances[:max_num_instances]
-        if (max_num_instances!=None) and self.config.over_sampling and (len(instances) < max_num_instances):
+        if (max_num_instances is not None) and is_train and \
+            self.config.over_sampling and (len(instances) < max_num_instances):
             origin_instances = instances.copy()
             while len(instances) < max_num_instances:
                 instances.append(random.choice(origin_instances))
@@ -390,8 +391,8 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         instances = _norm_fewnerd(docs)
         
         sample_template = {"Task": "NER", "Dataset": dataset_name, "Samples": [], "subset": subset}
-
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
         
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -446,7 +447,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
 
         sample_template = {"Task": "NER_TF", "Dataset": dataset_name, "Samples": [], "subset": subset}
         
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
         
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -473,7 +474,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
 
         sample_template = {"Task": "NER", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -534,7 +535,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
 
         sample_template = {"Task": "NER", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -601,7 +602,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         sample_template = {"Task": "ES", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
         labels_str = ', '.join(labels)
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -636,7 +637,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         sample_template = {"Task": "ET", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
         labels_str = ', '.join(labels)
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -678,7 +679,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         sample_template = {"Task": "EP", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
         labels_str = ', '.join(labels)
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -722,7 +723,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         sample_template = {"Task": "EPR", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
         labels_str = ', '.join(labels)
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -772,7 +773,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         sample_template = {"Task": "RE", "Dataset": dataset_name, "Samples": [], "subset": subset}
 
         labels_str = ', '.join(labels)
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -819,7 +820,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         # TODO, reconstruct Event Instruction to two stage
         # TODO, check
         labels_str = f'Event type: {labels[0]}, Arguments type: {labels[1]}.'
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -866,7 +867,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
 
         # TODO, reconstruct Event Instruction to two stage
         # TODO, check
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -915,7 +916,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
 
         sample_template = {"Task": "EET_TF", "Dataset": dataset_name, "Samples": [], "subset": subset}
         
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
         
         # labels_str = ", ".join(labels)
         for idx, instance in enumerate(instances):
@@ -947,7 +948,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
 
         # TODO, reconstruct Event Instruction to two stage
         # TODO, check
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
 
         for idx, instance in enumerate(instances):
             if len(instance['events']) > 1:
@@ -978,7 +979,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         instances, labels = self._load_dataset(dataset_path, labels_path)
         sample_template = {"Task": "ETRIG", "Dataset": dataset_name, "Samples": [], "subset": subset}
         
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
         
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -1004,7 +1005,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         instances, labels = self._load_dataset(dataset_path, labels_path)
         sample_template = {"Task": "EXAMPLE", "Dataset": dataset_name, "Samples": [], "subset": subset}
         
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
         
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -1029,7 +1030,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         instances, labels = self._load_dataset(dataset_path, labels_path)
         sample_template = {"Task": "EXAMPLE", "Dataset": dataset_name, "Samples": [], "subset": subset}
         
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
         
         for idx, instance in enumerate(instances):
             example = sample_template.copy()
@@ -1064,7 +1065,7 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
         instances, labels = self._load_dataset(dataset_path, labels_path)
         sample_template = {"Task": "EXPLAIN", "Dataset": dataset_name, "Samples": [], "subset": subset}
         
-        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances)
+        instances = self._sampling_dataset(instances, sampling_strategy, max_num_instances, is_train=subset=='train')
         
         for idx, instance in enumerate(instances):
             example = sample_template.copy()

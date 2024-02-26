@@ -2,15 +2,7 @@
     "NER": [
         {
             "sampling strategy": "full",
-            "dataset name": "PolyglotNER_sample_20000"
-        },
-        {
-            "sampling strategy": "full",
             "dataset name": "Broad_Tweet_Corpus"
-        },
-        {
-            "sampling strategy": "full",
-            "dataset name": "WikiANN_en"
         },
         {
             "sampling strategy": "full",
