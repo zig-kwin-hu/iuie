@@ -123,7 +123,7 @@ def compare_unevenness(dataset2gate_record, common_attributes, compared_attribut
         print('common average', np.mean([compare_count[attribute][value]['average_unevenness'] for value in compare_count[attribute]]))
                         
 if __name__ == '__main__':
-    dataset2gate_record = process_gate_loads('/home/zkhu143/iuie/output_ssd2/re_moelora/all/no_cluster_embedding_for_gate/InstructUIE_addname_16_4_1_router_z_True_False_False_False/gate_loads.jsonl')
+    dataset2gate_record = process_gate_loads('output_ssd2/re_moelora/all/no_cluster_embedding_for_gate/InstructUIE_addname_16_4_1_router_z_True_False_False_False/gate_loads.jsonl')
     common_attributes = {'dataset':None, 'stack_mode':'encoder', 'attention_mode':['self_attention'], 'module':None, 'layer_index':None}
     compared_attributes = {'dataset':None, 'stack_mode':None, 'attention_mode':None, 'module':None, 'layer_index':range(24)}
     compare_unevenness(dataset2gate_record, common_attributes, compared_attributes)

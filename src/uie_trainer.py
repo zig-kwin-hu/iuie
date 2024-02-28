@@ -782,8 +782,8 @@ class UIETrainer(Seq2SeqTrainer):
         #    }
         #print('gen_kwargs',gen_kwargs)
         #"/home/zkhu142/anaconda3/envs/llama/lib/python3.8/site-packages/transformers/generation/utils.py", line 1297, 
-        sentence_embedding_for_gate = inputs.pop("sentence_embedding_for_gate", None)
-        cluster_embedding_for_gate = inputs.pop("cluster_embedding_for_gate", None)
+        sentence_embedding_for_gate = inputs.get("sentence_embedding_for_gate", None)
+        cluster_embedding_for_gate = inputs.get("cluster_embedding_for_gate", None)
         assert not (self.args.use_sentence_embedding_for_gate and self.args.use_cluster_embedding_for_gate)
         embedding_for_gate = None
         if sentence_embedding_for_gate is not None and self.args.use_sentence_embedding_for_gate:

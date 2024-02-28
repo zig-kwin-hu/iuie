@@ -5,7 +5,7 @@ epoch_map=([with_sentence_iuie_mean_of_encoder]=30 [NYT11_NYT]=10 [semval-RE]=10
 # declare -A TASK2DATASETS=([re]="conll04 SciERC NYT11 semval-RE ADE_corpus-1500" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="CoNLL_2003 ACE_2004 ACE_2005")
 # DONE : [ner] = ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7_sample_15000 WikiANN_en WikiNeural
 #declare -A TASK2DATASETS=([re]="ADE_corpus NYT11_sample_30000 New-York-Times-RE_sample_30000 semval-RE conll04 GIDS SciERC kbp37" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
-declare -A TASK2DATASETS=([ner]="all" [re]="ADE_corpus" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
+declare -A TASK2DATASETS=([ner]="Broad_Tweet_Corpus" [re]="ADE_corpus" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
 
 set -x
 
@@ -18,9 +18,9 @@ port=$(shuf -i25000-30000 -n1)
 expert_num=4
 lora_r=16
 lora_alpha=16
-add_name=True
+add_name=False
 moe_topk=1
-moe_lora=True
+moe_lora=False
 gate_type=TopKGate
 gate_loss_type=router_z
 gate_loss_weight=1e-2
@@ -48,7 +48,7 @@ for TASK_CONFIG in ner
 do
     for DATASET_CONFIG in ${TASK2DATASETS[${TASK_CONFIG}]}
     do
-        if [[ "$DATASET_CONFIG" =~ ^(plo_all|re_all|disease|all)$ ]]; then
+        if [[ "$DATASET_CONFIG" =~ ^(plo_all|re_all|disease|all|Broad_Tweet_Corpus_WikiANN_en)$ ]]; then
             over_sample=True
         else
             over_sample=False
@@ -97,7 +97,7 @@ do
         --generation_max_length 50 \
         --max_num_instances_per_task 20000 \
         --max_num_instances_per_eval_task 500 \
-        --max_num_instances_per_predict_task 500 \
+        --max_num_instances_per_predict_task -1 \
         --add_task_name ${add_name} \
         --add_dataset_name ${add_name} \
         --num_examples 0 \
@@ -127,9 +127,9 @@ do
         --predict_each_dataset_with_best False \
         --auto_find_best_lora_checkpoint False \
         --save_strategy steps \
-        --save_steps 300 \
+        --save_steps 100 \
         --evaluation_strategy steps \
-        --eval_steps 300 \
+        --eval_steps 100 \
         --moe_lora ${moe_lora} \
         --gate_type ${gate_type} \
         --gate_loss_type ${gate_loss_type} \

@@ -515,6 +515,7 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    assert model_args.moe_lora or not training_args.write_gate_loads, "write_gate_loads only support moe lora"
 
     # Setup logging
     logging.basicConfig(
@@ -775,7 +776,7 @@ def main():
                 training_args.resume_from_checkpoint = None
                 if os.path.exists(checkpoint_name):
                     print(f"Restarting from LoRA Adapter {checkpoint_name}")
-                    adapters_weights = torch.load(checkpoint_name)
+                    adapters_weights = torch.load(checkpoint_name, map_location="cuda")
                     set_peft_model_state_dict(model, adapters_weights)
                 else:
                     print(f"LoRA Checkpoint {checkpoint_name} not found")
@@ -798,7 +799,7 @@ def main():
                         )  # only LoRA model - LoRA config above has to fit
                         if os.path.exists(checkpoint_name):
                             print(f"Restarting from LoRA Adapter {checkpoint_name}")
-                            adapters_weights = torch.load(checkpoint_name)
+                            adapters_weights = torch.load(checkpoint_name, map_location="cuda")
                             set_peft_model_state_dict(model, adapters_weights)
                         else:
                             print(f"LoRA Checkpoint {checkpoint_name} not found")
