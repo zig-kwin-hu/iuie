@@ -19,7 +19,7 @@ import copy
 import math
 import os
 import warnings
-from typing import Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -49,8 +49,13 @@ from transformers.models.t5.configuration_t5 import T5Config
 import sys
 sys.path.append('../')
 from peft_moe.tuners.moelora.layer import MOELoraLayer, MOELinear, MOELinearWithUniversal
-from .t5_utils import MOEBaseModelOutputWithPastAndCrossAttentions, MOESeq2SeqLMOutput
-
+from .t5_utils import MOEBaseModelOutputWithPastAndCrossAttentions, MOESeq2SeqLMOutput, MOET5Config
+#import GenerationMixin
+from transformers.generation.utils import GenerationMixin, GenerateOutput
+from transformers.generation.configuration_utils import GenerationConfig
+from transformers.generation.stopping_criteria import StoppingCriteriaList
+from transformers.generation.streamers import BaseStreamer
+from transformers.generation.logits_process import LogitsProcessorList
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "T5Config"
@@ -1596,10 +1601,14 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
         r"decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight",
     ]
 
-    def __init__(self, config: T5Config):
+    def __init__(self, config: MOET5Config):
+        assert isinstance(self, GenerationMixin), "MOET5ForConditionalGeneration must inherit from GenerationMixin"
         super().__init__(config)
         self.model_dim = config.d_model
-
+        self.before_moe_lora_gate_embedding_reduction = config.before_moe_lora_gate_embedding_reduction
+        if config.before_moe_lora_gate_embedding_reduction > 0:
+            self.moe_lora_gate_embedding_reduction = nn.Linear(config.before_moe_lora_gate_embedding_reduction, self.model_dim, bias=True)
+            self.moe_lora_gate_embedding_reduction_dropout = nn.Dropout(0.5)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
         encoder_config = copy.deepcopy(config)
@@ -1677,8 +1686,43 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
 
     def get_decoder(self):
         return self.decoder
-    
-
+    '''
+    @torch.no_grad()
+    def generate(
+        self,
+        inputs: Optional[torch.Tensor] = None,
+        generation_config: Optional[GenerationConfig] = None,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        prefix_allowed_tokens_fn: Optional[Callable[[int, torch.Tensor], List[int]]] = None,
+        synced_gpus: Optional[bool] = None,
+        assistant_model: Optional["PreTrainedModel"] = None,
+        streamer: Optional["BaseStreamer"] = None,
+        **kwargs,
+    ) -> Union[GenerateOutput, torch.LongTensor]:
+        if self.before_moe_lora_gate_embedding_reduction > 0:
+            embedding_for_gate = kwargs.get('embedding_for_gate', None)
+            if embedding_for_gate is not None:
+                #print('generate')
+                #print(embedding_for_gate.dtype, self.moe_lora_gate_embedding_reduction.weight.dtype, self.moe_lora_gate_embedding_reduction.bias.dtype)
+                #embedding_for_gate = embedding_for_gate.to(self.moe_lora_gate_embedding_reduction.weight.dtype)
+                #print(embedding_for_gate.dtype, self.moe_lora_gate_embedding_reduction.weight.dtype, self.moe_lora_gate_embedding_reduction.bias.dtype)
+                if embedding_for_gate.shape[1] == self.before_moe_lora_gate_embedding_reduction:
+                    embedding_for_gate = self.moe_lora_gate_embedding_reduction.to(embedding_for_gate.dtype)(embedding_for_gate)
+                    embedding_for_gate = self.moe_lora_gate_embedding_reduction_dropout(embedding_for_gate)
+                kwargs['embedding_for_gate'] = embedding_for_gate
+        super().generate(
+            inputs=inputs,
+            generation_config=generation_config,
+            logits_processor=logits_processor,
+            stopping_criteria=stopping_criteria,
+            prefix_allowed_tokens_fn=prefix_allowed_tokens_fn,
+            synced_gpus=synced_gpus,
+            assistant_model=assistant_model,
+            streamer=streamer,
+            **kwargs,
+        )
+    '''
     @add_start_docstrings_to_model_forward(T5_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=MOESeq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
@@ -1732,6 +1776,13 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
         >>> print(tokenizer.decode(outputs[0], skip_special_tokens=True))
         >>> # studies have shown that owning a dog is good for you.
         ```"""
+        '''
+        if self.before_moe_lora_gate_embedding_reduction > 0 and embedding_for_gate is not None:
+            #embedding_for_gate = embedding_for_gate.to(self.moe_lora_gate_embedding_reduction.weight.dtype)
+            if embedding_for_gate.shape[1] == self.before_moe_lora_gate_embedding_reduction:
+                embedding_for_gate = self.moe_lora_gate_embedding_reduction(embedding_for_gate)
+                embedding_for_gate = self.moe_lora_gate_embedding_reduction_dropout(embedding_for_gate)
+        '''
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 

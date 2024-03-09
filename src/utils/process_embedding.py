@@ -30,7 +30,8 @@ def print_distance_matrix(distance_matrix):
     
 if __name__ == '__main__':
     #embedding_path = 'data/ie_instruct_unique_id/cluster_embeddings/cluster_embeddings_InstructUIE_iota_mean_of_encoder_eval_0.npy'
-    embedding_path = 'data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_embeddings_lora_65536_21_None.npy'
+    #embedding_path = 'data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_embeddings_lora_65536_21_None.npy'
+    embedding_path = '/home/zkhu143/iuie/data/ie_instruct_unique_id/cluster_embeddings/re/cluster_embeddings_random_4096_8.npy'
     embeddings = np.load(embedding_path)
     distance_matrix = compute_distance_matrix(embeddings, 'cosine')
     print_distance_matrix(distance_matrix)

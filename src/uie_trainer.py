@@ -104,7 +104,6 @@ def skip_instructions(model, predictions_ids, tokenizer, dataset, ignore_idx=-10
     final_predictions = []
     if check_model(model.config._name_or_path, SUPPORTED_DECODER_MODELS):
         for example, pred in zip(dataset, predictions):
-
             if example['Instance']['answer_prefix'] in pred:
                 splits = pred.split(example['Instance']['answer_prefix'])
                 final_predictions.append(splits[-1].strip())
@@ -161,9 +160,11 @@ class SaveMetricsCallback(TrainerCallback):
         
         if args.local_rank == 0:
             if args.use_test_as_eval:
-                output_path = os.path.join(args.output_dir, f"eval_metrics_each_epoch_use_test_as_eval.jsonl")
+                output_path = os.path.join(args.output_dir, f"eval_metrics_each_epoch_use_test_as_eval_{args.max_num_instances_per_predict_task}.jsonl")
+                #output_path = os.path.join(args.output_dir, f"eval_metrics_each_epoch_use_test_as_eval.jsonl")
             else:
-                output_path = os.path.join(args.output_dir, f"eval_metrics_each_epoch.jsonl")
+                output_path = os.path.join(args.output_dir, f"eval_metrics_each_epoch_{args.max_num_instances_per_predict_task}.jsonl")
+                #output_path = os.path.join(args.output_dir, f"eval_metrics_each_epoch.jsonl")
             if epoch <= 1 and args.evaluation_strategy == IntervalStrategy.EPOCH:
                 f = open(output_path, "w")
             else:
@@ -220,13 +221,13 @@ class SaveBestModelsCallback(TrainerCallback):
                 self.best_metrics[metric_name] = 0
             if args.local_rank == 0 and not os.path.exists(checkpoint_folder):
                 os.mkdir(checkpoint_folder)
-                with open(os.path.join(checkpoint_folder, 'best_metrics.json'), 'w') as f:
+                with open(os.path.join(checkpoint_folder, f'best_metrics_{args.max_num_instances_per_predict_task}.json'), 'w') as f:
                     f.write(json.dumps({metric_name:0})+'\n')
             
             if metric_value > self.best_metrics[metric_name]:
                 self.best_metrics[metric_name] = metric_value
                 if args.local_rank == 0:
-                    with open(os.path.join(checkpoint_folder, 'best_metrics.json'), 'w') as f:
+                    with open(os.path.join(checkpoint_folder, f'best_metrics_{args.max_num_instances_per_predict_task}.json'), 'w') as f:
                         f.write(json.dumps({metric_name:metric_value})+'\n')
                         f.write(json.dumps(metrics)+'\n')
                 if not args.no_saving:
@@ -559,6 +560,8 @@ class UIETrainer(Seq2SeqTrainer):
         # Main evaluation loop
         for step, inputs in enumerate(dataloader):
             # Update the observed num examples
+            cluster_embedding_for_gate = inputs.get("cluster_embedding_for_gate", None)
+            assert not (self.args.use_cluster_embedding_for_gate and cluster_embedding_for_gate is None)
             observed_batch_size = find_batch_size(inputs)
             if observed_batch_size is not None:
                 observed_num_examples += observed_batch_size
@@ -790,6 +793,11 @@ class UIETrainer(Seq2SeqTrainer):
             embedding_for_gate = sentence_embedding_for_gate
         elif cluster_embedding_for_gate is not None and self.args.use_cluster_embedding_for_gate:
             embedding_for_gate = cluster_embedding_for_gate
+        before_moe_lora_gate_embedding_reduction = getattr(self.model, "before_moe_lora_gate_embedding_reduction")
+        assert before_moe_lora_gate_embedding_reduction is not None
+        if before_moe_lora_gate_embedding_reduction is not None and before_moe_lora_gate_embedding_reduction > 0 and embedding_for_gate is not None:
+            embedding_for_gate = model.moe_lora_gate_embedding_reduction.to(embedding_for_gate.dtype)(embedding_for_gate)
+            embedding_for_gate = model.moe_lora_gate_embedding_reduction_dropout(embedding_for_gate)
         generated_tokens = self.model.generate(
             #**generation_inputs,
             #**gen_kwargs,
@@ -819,11 +827,23 @@ class UIETrainer(Seq2SeqTrainer):
                     sentence_embedding_for_gate = inputs.pop("sentence_embedding_for_gate", None)
                     cluster_embedding_for_gate = inputs.pop("cluster_embedding_for_gate", None)
                     assert not (self.args.use_sentence_embedding_for_gate and self.args.use_cluster_embedding_for_gate)
+                    assert not (self.args.use_cluster_embedding_for_gate and cluster_embedding_for_gate is None)
                     if sentence_embedding_for_gate is not None and self.args.use_sentence_embedding_for_gate:
                         inputs['embedding_for_gate'] = sentence_embedding_for_gate
                     elif cluster_embedding_for_gate is not None and self.args.use_cluster_embedding_for_gate:
                         inputs['embedding_for_gate'] = cluster_embedding_for_gate
                     unique_ids = inputs.pop('unique_ids',None)
+
+                    before_moe_lora_gate_embedding_reduction = getattr(model, 'before_moe_lora_gate_embedding_reduction', None)
+                    if before_moe_lora_gate_embedding_reduction is None:
+                        before_moe_lora_gate_embedding_reduction = getattr(model.base_model, 'moe_lora_gate_embedding_reduction', None)
+                    assert before_moe_lora_gate_embedding_reduction is not None
+                    if before_moe_lora_gate_embedding_reduction is not None and before_moe_lora_gate_embedding_reduction>0 and\
+                        'embedding_for_gate' in inputs and inputs['embedding_for_gate'] is not None:
+                        #model.moe_lora_gate_embedding_reduction.weight.dtype bfloat16, inputs['embedding_for_gate'].dtype float32
+            
+                        inputs['embedding_for_gate'] = model.moe_lora_gate_embedding_reduction.to(inputs['embedding_for_gate'].dtype)(inputs['embedding_for_gate'])
+                        inputs['embedding_for_gate'] = model.moe_lora_gate_embedding_reduction_dropout(inputs['embedding_for_gate'])
                     outputs = model(**inputs)
                     
                     if self.args.embedding_type is not None:
@@ -1213,6 +1233,15 @@ class UIETrainer(Seq2SeqTrainer):
         elif cluster_embedding_for_gate is not None and self.args.use_cluster_embedding_for_gate:
             inputs['embedding_for_gate'] = cluster_embedding_for_gate
         unique_ids = inputs.pop('unique_ids',None)
+        
+        before_moe_lora_gate_embedding_reduction = getattr(model, 'before_moe_lora_gate_embedding_reduction')        
+        if before_moe_lora_gate_embedding_reduction is not None and before_moe_lora_gate_embedding_reduction>0 and\
+              'embedding_for_gate' in inputs and inputs['embedding_for_gate'] is not None:
+            #model.moe_lora_gate_embedding_reduction.weight.dtype bfloat16, inputs['embedding_for_gate'].dtype float32
+            
+            inputs['embedding_for_gate'] = model.moe_lora_gate_embedding_reduction.to(inputs['embedding_for_gate'].dtype)(inputs['embedding_for_gate'])
+            inputs['embedding_for_gate'] = model.moe_lora_gate_embedding_reduction_dropout(inputs['embedding_for_gate'])
+
         outputs = model(**inputs)
         if self.args.write_gate_loads:
             fout = open(os.path.join(self.args.output_dir, 'gate_loads.jsonl'),'a+')
@@ -1247,6 +1276,7 @@ class UIETrainer(Seq2SeqTrainer):
         if 'gate_loss' in outputs and outputs['gate_loss'] is not None:
             loss = loss + outputs['gate_loss']*self.args.gate_loss_weight
         return (loss, outputs) if return_outputs else loss
+
     def record_gate_loads(self, gate_outputs, attention_mode, stack_mode, unique_ids, prefix=''):
         records = []
         def recursive_round(element, decimal):
@@ -1263,6 +1293,7 @@ class UIETrainer(Seq2SeqTrainer):
                     gate_load[module] = None
                     continue
                 gate_load[module] = {}
+
                 gate_load[module]['top1_ratio'] = recursive_round(gate_output[module]['top1_ratio'].cpu().numpy().tolist(),4)
                 gate_load[module]['scores'] = recursive_round(gate_output[module]['scores'].cpu().numpy().tolist(),4)
                 assert len(gate_load[module]['top1_ratio']) == len(unique_ids)

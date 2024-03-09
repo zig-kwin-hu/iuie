@@ -62,6 +62,9 @@ def get_peft_model_state_dict(model, state_dict=None, adapter_name="default", un
                     bias_name = k.split("lora_")[0] + "bias"
                     if bias_name in state_dict:
                         to_return[bias_name] = state_dict[bias_name]
+                    if 'gate_embedding_reduction' in k:
+                        print('saving gate_embedding_reduction in save_and_load.py', k)
+                        exit(0)
         else:
             raise NotImplementedError
         to_return = {k: v for k, v in to_return.items() if (("lora_" in k and adapter_name in k) or ("bias" in k))}

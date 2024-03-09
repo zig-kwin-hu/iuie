@@ -8,6 +8,8 @@ import torch
 from typing import Optional, Tuple, List
 from dataclasses import dataclass
 
+from transformers.models.t5.configuration_t5 import T5Config
+
 @dataclass
 class MOESeq2SeqLMOutput(Seq2SeqLMOutput):
     """
@@ -152,3 +154,101 @@ class BaseMoEModelOutputWithPast(BaseModelOutput):
     num_dropped_tokens: Optional[Tuple[torch.Tensor]] = None
     gate_load: Optional[Tuple[list]] = None
     gate_importance: Optional[Tuple[list]] = None
+
+class MOET5Config(T5Config):
+    r"""
+    This is the configuration class to store the configuration of a [`T5Model`] or a [`TFT5Model`]. It is used to
+    instantiate a T5 model according to the specified arguments, defining the model architecture. Instantiating a
+    configuration with the defaults will yield a similar configuration to that of the T5
+    [t5-small](https://huggingface.co/t5-small) architecture.
+
+    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PretrainedConfig`] for more information.
+
+    Arguments:
+        vocab_size (`int`, *optional*, defaults to 32128):
+            Vocabulary size of the T5 model. Defines the number of different tokens that can be represented by the
+            `inputs_ids` passed when calling [`T5Model`] or [`TFT5Model`].
+        d_model (`int`, *optional*, defaults to 512):
+            Size of the encoder layers and the pooler layer.
+        d_kv (`int`, *optional*, defaults to 64):
+            Size of the key, query, value projections per attention head. The `inner_dim` of the projection layer will
+            be defined as `num_heads * d_kv`.
+        d_ff (`int`, *optional*, defaults to 2048):
+            Size of the intermediate feed forward layer in each `T5Block`.
+        num_layers (`int`, *optional*, defaults to 6):
+            Number of hidden layers in the Transformer encoder.
+        num_decoder_layers (`int`, *optional*):
+            Number of hidden layers in the Transformer decoder. Will use the same value as `num_layers` if not set.
+        num_heads (`int`, *optional*, defaults to 8):
+            Number of attention heads for each attention layer in the Transformer encoder.
+        relative_attention_num_buckets (`int`, *optional*, defaults to 32):
+            The number of buckets to use for each attention layer.
+        relative_attention_max_distance (`int`, *optional*, defaults to 128):
+            The maximum distance of the longer sequences for the bucket separation.
+        dropout_rate (`float`, *optional*, defaults to 0.1):
+            The ratio for all dropout layers.
+        layer_norm_eps (`float`, *optional*, defaults to 1e-6):
+            The epsilon used by the layer normalization layers.
+        initializer_factor (`float`, *optional*, defaults to 1):
+            A factor for initializing all weight matrices (should be kept to 1, used internally for initialization
+            testing).
+        feed_forward_proj (`string`, *optional*, defaults to `"relu"`):
+            Type of feed forward layer to be used. Should be one of `"relu"` or `"gated-gelu"`. T5v1.1 uses the
+            `"gated-gelu"` feed forward projection. Original T5 uses `"relu"`.
+        use_cache (`bool`, *optional*, defaults to `True`):
+            Whether or not the model should return the last key/values attentions (not used by all models).
+    """
+    def __init__(
+        self,
+        vocab_size=32128,
+        d_model=512,
+        d_kv=64,
+        d_ff=2048,
+        num_layers=6,
+        num_decoder_layers=None,
+        num_heads=8,
+        relative_attention_num_buckets=32,
+        relative_attention_max_distance=128,
+        dropout_rate=0.1,
+        layer_norm_epsilon=1e-6,
+        initializer_factor=1.0,
+        feed_forward_proj="relu",
+        is_encoder_decoder=True,
+        use_cache=True,
+        pad_token_id=0,
+        eos_token_id=1,
+        before_moe_lora_gate_embedding_reduction=-1,
+        **kwargs,
+    ):
+        self.before_moe_lora_gate_embedding_reduction = before_moe_lora_gate_embedding_reduction
+        super().__init__(
+            vocab_size=vocab_size,
+            d_model=d_model,
+            d_kv=d_kv,
+            d_ff=d_ff,
+            num_layers=num_layers,
+            num_decoder_layers=num_decoder_layers,
+            num_heads=num_heads,
+            relative_attention_num_buckets=relative_attention_num_buckets,
+            relative_attention_max_distance=relative_attention_max_distance,
+            dropout_rate=dropout_rate,
+            layer_norm_epsilon=layer_norm_epsilon,
+            initializer_factor=initializer_factor,
+            feed_forward_proj=feed_forward_proj,
+            is_encoder_decoder=is_encoder_decoder,
+            use_cache=use_cache,
+            pad_token_id=pad_token_id,
+            eos_token_id=eos_token_id,
+            **kwargs
+        )
+    # init from an existing T5Config instance
+    @classmethod
+    def from_t5_config(cls, config: T5Config, before_moe_lora_gate_embedding_reduction=-1, **kwargs):
+        #get all the attributes from the T5Config instance
+        kwargs_original = {k: v for k, v in config.__dict__.items()}
+        kwargs_original['before_moe_lora_gate_embedding_reduction'] = before_moe_lora_gate_embedding_reduction
+        kwargs.update(kwargs_original)
+        return cls(
+            **kwargs
+        )

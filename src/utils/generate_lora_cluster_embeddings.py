@@ -84,7 +84,7 @@ def generate_random_cluster_embeddings(task, embedding_dim, cluster_num, dataset
                     unique_id2index_cluster[data[i]['unique_id']] = dataset2id[dataset]
     np.save('{}/cluster_embeddings_random_{}_{}.npy'.format(target_dir, str(embedding_dim), str(cluster_num)), embeddings)
     json.dump(unique_id2index_cluster, open('{}/cluster_uid2index_random_{}_{}.json'.format(target_dir, str(embedding_dim), str(cluster_num)), 'w'), indent=2)
-def generate_lora_cluster_embeddings(task, embeddings, dataset2id, target_dir, embedding_dim=None, dimension_reduction=None):
+def generate_lora_cluster_embeddings(task, embeddings, dataset2id, target_dir, embedding_dim=None, dimension_reduction=None, zero_center=False, normalize=False):
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
@@ -94,6 +94,10 @@ def generate_lora_cluster_embeddings(task, embeddings, dataset2id, target_dir, e
     else:
         embedding_dim = embeddings.shape[1]
     cluster_num = embeddings.shape[0]
+    if zero_center:
+        embeddings = embeddings - np.mean(embeddings, axis=0, keepdims=True)
+    if normalize:
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
     unique_id2index_cluster = {}
     for dataset in dataset2id:
         path = 'data/ie_instruct_unique_id/{}/{}'.format(task, dataset)
@@ -105,8 +109,8 @@ def generate_lora_cluster_embeddings(task, embeddings, dataset2id, target_dir, e
                 data = json.load(fin)
                 for i in range(len(data)):
                     unique_id2index_cluster[data[i]['unique_id']] = dataset2id[dataset]
-    np.save('{}/cluster_embeddings_lora_{}_{}_{}.npy'.format(target_dir, str(embedding_dim), str(cluster_num), str(dimension_reduction)), embeddings)
-    json.dump(unique_id2index_cluster, open('{}/cluster_uid2index_lora_{}_{}_{}.json'.format(target_dir, str(embedding_dim), str(cluster_num), str(dimension_reduction)), 'w'), indent=2)
+    np.save('{}/cluster_embeddings_lora_{}_{}_{}_{}_{}.npy'.format(target_dir, zero_center, normalize, str(embedding_dim), str(cluster_num), str(dimension_reduction)), embeddings)
+    json.dump(unique_id2index_cluster, open('{}/cluster_uid2index_lora_{}_{}_{}_{}_{}.json'.format(target_dir, zero_center, normalize, str(embedding_dim), str(cluster_num), str(dimension_reduction)), 'w'), indent=2)
 if __name__ == '__main__':
     prefix = 'data/ie_instruct_unique_id/NER/'
     weights_path = '/home/zkhu143/iuie_filtered/'
@@ -144,5 +148,5 @@ if __name__ == '__main__':
     lora_embeddings = torch.cat(lora_embeddings, dim=0).cpu().float().numpy()
     print('Lora embeddings shape', lora_embeddings.shape)
 
-    generate_lora_cluster_embeddings('NER', lora_embeddings, dataset2id, target_dir)
+    generate_lora_cluster_embeddings('NER', lora_embeddings, dataset2id, target_dir, zero_center=True, normalize=False)
     

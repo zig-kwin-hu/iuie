@@ -23,7 +23,7 @@ import torch.nn.functional as F
 
 from peft_moe.tuners.tuners_utils import BaseTunerLayer
 from peft_moe.utils.other import transpose
-from peft_moe.tuners.moelora.moe_modules import TopKGate, MOELinearA, MOELinearB, Expert
+from peft_moe.tuners.moelora.moe_modules import TopKGate, MOELinearA, MOELinearB, Expert, TopKGateHighDim
 
 
 class MOELoraLayer(BaseTunerLayer):
@@ -229,14 +229,17 @@ class MOELinear(nn.Linear, MOELoraLayer):
         self.lora_task_embedding = nn.ModuleDict({})
         self.lora_gate = nn.ModuleDict({})
         self.lora_task_embedding.update(nn.ModuleDict({adapter_name: nn.Embedding(self.task_num+1, self.task_embedding_dim)}))
-        if self.gate_type in ['TopKGate']:
-            selected_gate_class = {'TopKGate': TopKGate}[self.gate_type]
+        if self.gate_type in ['TopKGate', 'TopKGateHighDim']:
+            selected_gate_class = {'TopKGate': TopKGate, 'TopKGateHighDim': TopKGate}[self.gate_type]
         else:
             raise ValueError(f"Gate type {self.gate_type} not supported")
         if self.gate_embedding_dim is None:
             self.gate_embedding_dim = self.in_features
-        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.gate_embedding_dim, self.expert_num, self.moe_topk, self.gate_loss_type, self.add_noise,\
-                                                                               regularized=self.regularized)}))
+        if self.gate_type not in ['TopKGateHighDim']:
+            self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.gate_embedding_dim, self.expert_num, self.moe_topk, self.gate_loss_type, self.add_noise,\
+                                                                           regularized=self.regularized)}))
+        else:
+            raise NotImplementedError("TopKGateHighDim not implemented")
         if self.existing_gate_weight is not None:
             self.lora_gate[adapter_name].set_gate_weight(self.existing_gate_weight)
         
@@ -351,6 +354,8 @@ class MOELinear(nn.Linear, MOELoraLayer):
                 x = x.to(lora_A.loraA[0].weight.dtype)
                 moe_output = lora_B(lora_A(dropout(x)))# (batch_size, seq_len, expert_num, out_features)
                 if embedding_for_gate is not None:
+                    if self.gate_type in ['TopKGateHighDim']:
+                        raise NotImplementedError("TopKGateHighDim not implemented")
                     gate_output = self.lora_gate[active_adapter](embedding_for_gate)
                 else:
                     gate_output = self.lora_gate[active_adapter](x)
@@ -401,15 +406,18 @@ class MOELinearWithUniversal(nn.Linear, MOELoraLayer):
         self.lora_task_embedding = nn.ModuleDict({})
         self.lora_gate = nn.ModuleDict({})
         self.lora_task_embedding.update(nn.ModuleDict({adapter_name: nn.Embedding(self.task_num+1, self.task_embedding_dim)}))
-        if self.gate_type in ['TopKGate']:
-            selected_gate_class = {'TopKGate': TopKGate}[self.gate_type]
+        if self.gate_type in ['TopKGate', 'TopKGateHighDim']:
+            selected_gate_class = {'TopKGate': TopKGate, 'TopKGateHighDim':TopKGate}[self.gate_type]
         else:
             raise ValueError(f"Gate type {self.gate_type} not supported")
         #minus one because the universal expert is not included in the gate
         if self.gate_embedding_dim is None:
             self.gate_embedding_dim = self.in_features
-        self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.gate_embedding_dim, self.expert_num-1, self.moe_topk, self.gate_loss_type, self.add_noise, \
+        if self.gate_type not in ['TopKGateHighDim']:
+            self.lora_gate.update(nn.ModuleDict({adapter_name: selected_gate_class(self.gate_embedding_dim, self.expert_num-1, self.moe_topk, self.gate_loss_type, self.add_noise, \
                                                                                regularized=self.regularized)}))
+        else:
+            raise NotImplementedError("TopKGateHighDim not implemented")
         if self.existing_gate_weight is not None:
             self.lora_gate[adapter_name].set_gate_weight(self.existing_gate_weight)
         

@@ -18,7 +18,7 @@ port=$(shuf -i25000-30000 -n1)
 expert_num=8
 lora_r=16
 lora_alpha=16 # should * power(r, 0.5) based on the discovery from rs lora.
-add_name=True
+add_name=False
 moe_topk=2
 moe_lora=True
 gate_type=TopKGate
@@ -77,8 +77,6 @@ do
             output_dir="output_ssd2/${TASK_CONFIG}_notraining/${DATASET_CONFIG}/${name_after_slash}"
         fi
         CUDA_VISIBLE_DEVICES=0,1,2,3 python src/run_uie.py \
-        --do_train \
-        --do_eval \
         --do_predict \
         --num_beams 1 \
         --repetition_penalty 1.0 \
@@ -103,8 +101,8 @@ do
         --max_target_length 50 \
         --generation_max_length 50 \
         --max_num_instances_per_task 10000 \
-        --max_num_instances_per_eval_task 200 \
-        --max_num_instances_per_predict_task 200 \
+        --max_num_instances_per_eval_task -1 \
+        --max_num_instances_per_predict_task -1 \
         --add_task_name ${add_name} \
         --add_dataset_name ${add_name} \
         --num_examples 0 \
@@ -149,7 +147,7 @@ do
         --use_cluster_embedding_for_gate ${use_cluster_embedding_for_gate} \
         --cluster_embedding_path ${cluster_embedding_path} \
         --cluster_uid2index_path ${cluster_uid2index_path} \
-        #--resume_from_checkpoint /home/zkhu143/iuie/output/ner_lora/plo_all/flan-t5-xl/checkpoint-30 \
+        --resume_from_checkpoint /home/zkhu143/iuie/output_ssd2/multi_task_moelora/all/no_cluster_embedding_for_gate/InstructUIE_16_TopKGate_8_2_router_z_True_False_False_False/checkpoint-300 \
         #--evaluation_strategy epoch \
         #--save_strategy epoch \
         #--evaluation_strategy epoch \

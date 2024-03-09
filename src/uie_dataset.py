@@ -309,8 +309,10 @@ class UIEInstructions(datasets.GeneratorBasedBuilder):
     def _sampling_dataset(self, instances, sampling_strategy, max_num_instances, is_train=True):
         print("Sampling strategy: {}".format(sampling_strategy))
         print('Total instances: {}'.format(len(instances)))
+        random.seed(0)
         if max_num_instances is not None and max_num_instances >= 0 \
             and len(instances) > max_num_instances: #and sampling_strategy == 'random'
+            random.shuffle(instances)
             instances = instances[:max_num_instances]
         if (max_num_instances is not None) and is_train and \
             self.config.over_sampling and (len(instances) < max_num_instances):

@@ -49,7 +49,10 @@ if is_bnb_available():
 if is_bnb_4bit_available():
     from .bnb import MOELinear4bit
 
+from typing import Any, Union
 
+import torch
+from transformers.generation.utils import GenerationMixin
 class MOELoraModel(BaseTuner):
     """
     Creates Low Rank Adapter (Lora) model from a pretrained transformers model.
@@ -109,7 +112,6 @@ class MOELoraModel(BaseTuner):
 
     def __init__(self, model, config, adapter_name) -> None:
         super().__init__(model, config, adapter_name)
-
     def _check_new_adapter_config(self, config: MOELoraConfig) -> None:
         """
         A helper method to check the config when a new adapter is being added.

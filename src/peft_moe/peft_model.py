@@ -551,7 +551,11 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
         """
         Returns the base model.
         """
-        return self.base_model if self.active_peft_config.is_prompt_learning else self.base_model.model
+        if self.active_peft_config.is_prompt_learning:
+            return self.base_model
+        else:
+            raise ValueError('get base model returning self.base_model.model')
+            self.base_model.model
 
     def add_adapter(self, adapter_name: str, peft_config: PeftConfig):
         if peft_config.peft_type != self.peft_type:

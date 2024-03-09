@@ -33,7 +33,7 @@ class TopKGate(nn.Module):
         assert weight.size(0) == self.expert_num
         self.GateL.weight.data = weight.clone().detach().requires_grad_(True).to(self.GateL.weight.data.device).to(self.GateL.weight.data.dtype)
     def forward(self, x):
-
+        #GateL weight's dtype is float32
         logits = self.GateL(x)
         
         if self.add_noise:
@@ -57,7 +57,62 @@ class TopKGate(nn.Module):
         loss = None
         loss = self.loss_function(logits)
         return {'logits': logits, 'scores': scores_filtered, 'loss':loss}
+class SharedComponents:
+    _GateL1 = {}
+    
+    @staticmethod
+    def get_GateL1(input_size):
+        if input_size not in SharedComponents._GateL1:
+            SharedComponents._GateL1[input_size] = nn.Linear(input_size, 1024, bias=False)
+        assert len(SharedComponents._GateL1) <= 1
+        return SharedComponents._GateL1[input_size]
+class TopKGateHighDim(nn.Module):
+    def __init__(self, input_size, expert_num, moe_topk: int = -1, loss_type=None, add_noise=False, regularized=True):
+        raise NotImplementedError('This module is not implemented yet')
+        super().__init__()
+        self.GateL1 = SharedComponents.get_GateL1(input_size)
+        self.dropout1 = nn.Dropout(0.5)
+        self.GateL2 = nn.Linear(1024, expert_num, bias=False)
+        self.act = nn.Softmax(dim=-1)    # 第0维为batch size
+        self.moe_topk = moe_topk
+        self.expert_num = expert_num
+        if loss_type == 'router_z':
+            self.loss_function = _router_z_loss
+        elif loss_type == 'no_loss':
+            self.loss_function = lambda x: 0.
+        elif loss_type is not None:
+            raise ValueError(f'Unknown loss type: {loss_type}')
+        else:
+            self.loss_function = lambda x: 0.
+        self.add_noise = add_noise
+        self.regularized = regularized
+    def set_gate_weight(self, weight):
+        raise NotImplementedError
+    def forward(self, x):
+        x = F.relu(self.GateL1(x))
+        x = self.dropout1(x)
+        logits = self.GateL2(x)
+        
+        if self.add_noise:
+            logits = logits + torch.randn_like(logits)*((1/self.expert_num)**0.5)
 
+        
+        if self.moe_topk is not None and self.moe_topk > 0:
+            topk_logits, topk_indices = torch.topk(logits, min(self.moe_topk+1, self.expert_num), dim=-1)#batch_size, seq_len, topk+1
+            topk_logits = topk_logits[:, :, :self.moe_topk]
+            topk_indices = topk_indices[:, :, :self.moe_topk]
+            zeros = torch.zeros_like(logits, requires_grad=True, device=logits.device)
+            if self.regularized:
+                topk_scores = self.act(topk_logits.float()).to(logits.dtype)
+            else:
+                scores = self.act(logits.float()).to(logits.dtype)
+                topk_scores = torch.gather(input=scores, dim=-1, index=topk_indices)
+            scores_filtered = zeros.scatter(dim=-1, index=topk_indices, src=topk_scores)
+        else:
+            scores_filtered = self.act(logits.float()).to(logits.dtype)
+        loss = None
+        loss = self.loss_function(logits)
+        return {'logits': logits, 'scores': scores_filtered, 'loss':loss}
 class Expert(nn.Module):
 
     def __init__(self, in_features, out_features, bias=False):
@@ -121,10 +176,6 @@ class MOELinearB(nn.Module):
         for _ in range(self.expert_num):
             self.loraB.append(Expert(self.r, self.out_features, bias))
         
-        
-
-
-    
     def forward(self, x):
         '''input x is a list, return output is also a list'''
         #outputs = []

@@ -65,6 +65,8 @@ from model.bloom import BloomForCausalLM_WithLoss
 from model.codegen import CodeGenForCausalLM_WithLoss
 from model.gpt_neox import GPTNeoXForCausalLM_WithLoss
 from model.t5 import MOET5ForConditionalGeneration
+from model.t5_utils import MOET5Config
+from transformers.models.t5.configuration_t5 import T5Config
 # from utils.lorahub import set_lorahub_model
 
 from uie_collator import DataCollatorForUIE
@@ -128,8 +130,15 @@ def merge_embeddings(uid2index, embeddings, datasets):
     necessary_index.sort()
     index2newindex = {index: i for i, index in enumerate(necessary_index)}
     new_embeddings = embeddings[necessary_index]
-    new_uid2index = {uid: index2newindex[uid2index[uid]] for uid in uid2index}
-    new_embeddings = torch.nn.Parameter(torch.tensor(new_embeddings, dtype=torch.float32), requires_grad=False)
+    
+    new_uid2index = {}#uid: index2newindex[uid2index[uid]] for uid in uid2index}
+    for dataset in datasets:
+        for example in dataset:
+            uid = example['Instance']['unique_id']
+            index = uid2index[uid]
+            new_index = index2newindex[index]
+            new_uid2index[uid] = new_index
+    new_embeddings = torch.nn.Parameter(new_embeddings.clone().detach(), requires_grad=False)
     return new_uid2index, new_embeddings
 
 @dataclass
@@ -255,6 +264,16 @@ class ModelArguments:
         default=None,
         metadata={"help": "The path of existing gate weight."},
     )
+    gate_embedding_dim: Optional[int] = field(
+        default=None,
+        metadata={"help": "The embedding dim for gate embedding."},
+    )
+    before_moe_lora_gate_embedding_reduction: Optional[int] = field(
+        default=-1,
+        metadata={"help": "The dim for gate embedding before moe lora gate embedding reduction."},
+    )
+
+
 
 
 @dataclass
@@ -498,6 +517,10 @@ class UIETrainingArguments(Seq2SeqTrainingArguments):
         default=False,
         metadata={"help": "Write down the gate loads"},
     )
+    max_num_instances_per_predict_task_: Optional[int] = field(
+        default=None,
+        metadata={"help": "The maximum number of instances we will consider for each validation/test task."}
+    )
 
     
 
@@ -516,7 +539,6 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     assert model_args.moe_lora or not training_args.write_gate_loads, "write_gate_loads only support moe lora"
-
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -646,6 +668,8 @@ def main():
         task_type = TaskType.SEQ_2_SEQ_LM
         if not training_args.deepspeed:
             device_map = "auto"
+        assert isinstance(config, T5Config)
+        config = MOET5Config.from_t5_config(config, model_args.before_moe_lora_gate_embedding_reduction)
     else:
         model_class = AutoModelForSeq2SeqLM
         task_type = TaskType.SEQ_2_SEQ_LM
@@ -699,6 +723,8 @@ def main():
             if type(model_args.existing_gate_weight) == str and os.path.exists(model_args.existing_gate_weight):
                 existing_gate_weight = torch.tensor(np.load(model_args.existing_gate_weight))
                 gate_embedding_dim = existing_gate_weight.shape[1]
+            else:
+                gate_embedding_dim = model_args.gate_embedding_dim
             config = MOELoraConfig(
                 r=model_args.lora_r,
                 lora_alpha=model_args.lora_alpha,
@@ -781,7 +807,10 @@ def main():
                 else:
                     print(f"LoRA Checkpoint {checkpoint_name} not found")
         elif training_args.auto_find_best_lora_checkpoint:
-            with open(os.path.join(training_args.output_dir, f"eval_metrics_each_epoch_use_test_as_eval.jsonl"), "r") as fin:
+            fin_path = os.path.join(training_args.output_dir, "eval_metrics_each_epoch_use_test_as_eval_{}.jsonl".format(data_args.max_num_instances_per_predict_task))
+            if not os.path.exists(fin_path):
+                fin_path = os.path.join(training_args.output_dir, f"eval_metrics_each_epoch_use_test_as_eval.jsonl")
+            with open(fin_path, "r") as fin:
                 lines = fin.readlines()
                 js = [json.loads(line) for line in lines]
                 best_f1 = 0
@@ -901,7 +930,7 @@ def main():
         result["gen_len"] = np.mean(prediction_lens)
         result = {k: round(v, 4) for k, v in result.items()}
         if save_prefix is not None:
-            with open(os.path.join(training_args.output_dir, f"{save_prefix}_eval_predictions.jsonl"), "w") as fout:
+            with open(os.path.join(training_args.output_dir, f"{save_prefix}_eval_predictions_{data_args.max_num_instances_per_predict_task}.jsonl"), "w") as fout:
                 for example, pred in zip(dataset, decoded_preds):
                     fout.write(json.dumps({
                         "Task": example["Task"],
@@ -926,7 +955,7 @@ def main():
         result["gen_len"] = np.mean(prediction_lens)
         result = {k: round(v, 4) for k, v in result.items()}
         if save_prefix is not None:
-            with open(os.path.join(training_args.output_dir, f"{save_prefix}_eval_predictions.jsonl"), "w") as fout:
+            with open(os.path.join(training_args.output_dir, f"{save_prefix}_eval_predictions_{data_args.max_num_instances_per_predict_task}.jsonl"), "w") as fout:
                 for example, pred in zip(dataset, decoded_preds):
                     fout.write(json.dumps({
                         "Task": example["Task"],
@@ -963,6 +992,7 @@ def main():
 
     num_beams = data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams
     repetition_penalty = data_args.repetition_penalty
+    training_args.max_num_instances_per_predict_task = data_args.max_num_instances_per_predict_task
     trainer = UIETrainer(
         model=model,
         args=training_args,
@@ -1080,7 +1110,7 @@ def main():
                         ori_model,
                         checkpoint
                     )
-                
+                training_args.max_num_instances_per_predict_task = data_args.max_num_instances_per_predict_task
                 trainer = UIETrainer(
                     model=model,
                     args=training_args,
@@ -1115,7 +1145,7 @@ def main():
                 all_metrics.update(metrics)
                 if training_args.predict_each_dataset_with_best:
                     print(f"Saving predictions for checkpoint {checkpoint}")
-                    path = os.path.join(checkpoint, "all_results.json")
+                    path = os.path.join(checkpoint, "all_results_{}.json".format(data_args.max_num_instances_per_predict_task))
                     with open(path, "w") as f:
                         json.dump(metrics, f, indent=4, sort_keys=True)
         else:
