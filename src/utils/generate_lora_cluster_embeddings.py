@@ -84,7 +84,7 @@ def generate_random_cluster_embeddings(task, embedding_dim, cluster_num, dataset
                     unique_id2index_cluster[data[i]['unique_id']] = dataset2id[dataset]
     np.save('{}/cluster_embeddings_random_{}_{}.npy'.format(target_dir, str(embedding_dim), str(cluster_num)), embeddings)
     json.dump(unique_id2index_cluster, open('{}/cluster_uid2index_random_{}_{}.json'.format(target_dir, str(embedding_dim), str(cluster_num)), 'w'), indent=2)
-def generate_lora_cluster_embeddings(task, embeddings, dataset2id, target_dir, embedding_dim=None, dimension_reduction=None, zero_center=False, normalize=False):
+def generate_lora_cluster_embeddings(embeddings, dataset2id, target_dir, embedding_dim=None, dimension_reduction=None, zero_center=False, normalize=False):
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
@@ -99,22 +99,25 @@ def generate_lora_cluster_embeddings(task, embeddings, dataset2id, target_dir, e
     if normalize:
         embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
     unique_id2index_cluster = {}
-    for dataset in dataset2id:
-        path = 'data/ie_instruct_unique_id/{}/{}'.format(task, dataset)
-        print('Processing {}'.format(path))
-        for set_name in ['train', 'dev', 'test']:
-            if not os.path.exists('{}/{}.json'.format(path, set_name)):
-                continue
-            with open('{}/{}.json'.format(path, set_name)) as fin:
-                data = json.load(fin)
-                for i in range(len(data)):
-                    unique_id2index_cluster[data[i]['unique_id']] = dataset2id[dataset]
+    for task in dataset2id:
+        for dataset in dataset2id[task]:
+            path = 'data/ie_instruct_unique_id/{}/{}'.format(task, dataset)
+            print('Processing {}'.format(path))
+            at_least_one = False
+            for set_name in ['train', 'dev', 'test']:
+                if not os.path.exists('{}/{}.json'.format(path, set_name)):
+                    continue
+                with open('{}/{}.json'.format(path, set_name)) as fin:
+                    data = json.load(fin)
+                    for i in range(len(data)):
+                        unique_id2index_cluster[data[i]['unique_id']] = dataset2id[task][dataset]
+                at_least_one = True
+            assert at_least_one, 'No data found for {}'.format(path)
     np.save('{}/cluster_embeddings_lora_{}_{}_{}_{}_{}.npy'.format(target_dir, zero_center, normalize, str(embedding_dim), str(cluster_num), str(dimension_reduction)), embeddings)
     json.dump(unique_id2index_cluster, open('{}/cluster_uid2index_lora_{}_{}_{}_{}_{}.json'.format(target_dir, zero_center, normalize, str(embedding_dim), str(cluster_num), str(dimension_reduction)), 'w'), indent=2)
 if __name__ == '__main__':
-    prefix = 'data/ie_instruct_unique_id/NER/'
     weights_path = '/home/zkhu143/iuie_filtered/'
-    tasks=['NER']
+    tasks=['NER','RE','EEA','EET']
     device = 'cuda'
     layers = 23
     modules = 'q'#['q','v']
@@ -123,30 +126,44 @@ if __name__ == '__main__':
     selforcross = 'EncDecAttention'#['SelfAttention', 'EncDecAttention']
     weights = load_all_weights(weights_path, device, tasks, layer=layers, module=modules, AorB=AorB, encordec=encordec, selforcross=selforcross)
     weights = flatten_weights(weights)
-    datasets = json.load(open('configs/ner_configs/all/dev_tasks.json'))['NER']
+    datasets = json.load(open('configs/multi_task_configs/all/train_tasks.json'))
     dataset2id = {}
-    for dataset in datasets:
-        dataset2id[dataset['dataset name']] = len(dataset2id)
-    target_dir = 'data/ie_instruct_unique_id/cluster_embeddings/ner/'
+    current_id = 0
+    for task in tasks:
+        if task not in dataset2id:
+            dataset2id[task] = {}
+        for dataset in datasets[task]:
+            dataset2id[task][dataset['dataset name']] = current_id
+            current_id += 1
+    target_dir = 'data/ie_instruct_unique_id/cluster_embeddings/multi_task/'
     if not os.path.exists(target_dir):
         os.makedirs(target_dir)
-    id2dataset = {v: k for k, v in dataset2id.items()}
-    dataset2weight = {}
+    id2dataset = {}
+    for task in dataset2id:
+        for dataset in dataset2id[task]:
+            id2dataset[dataset2id[task][dataset]] = {'task':task,'dataset':dataset}
+    dataset2weight = {task:{} for task in tasks}
     for weight in weights:
         dataset = weight['dataset']
-        if dataset not in dataset2weight and weight['task'] in tasks or weight['task'] in [t.lower() for t in tasks]:
-            dataset2weight[dataset] = weight['flat_weight']
+        task = weight['task'].upper()
+        if dataset not in dataset2weight[task] and (weight['task'] in tasks or weight['task'] in [t.lower() for t in tasks]):
+            dataset2weight[task][dataset] = weight['flat_weight']
     lora_embeddings = []
-    for id in range(len(dataset2id)):
-        dataset = id2dataset[id]
-        if dataset not in dataset2weight:
+    for id in range(len(id2dataset)):
+        dataset = id2dataset[id]['dataset']
+        task = id2dataset[id]['task']
+        if dataset not in dataset2weight[task]:
             dataset = '_'.join(dataset.split(' '))
-        if dataset not in dataset2weight:
+        if dataset not in dataset2weight[task]:
             dataset = dataset.split('_sample')[0]
-        assert dataset in dataset2weight, 'No weight found for {}\n existing datasets are {}'.format(dataset, dataset2weight.keys())
-        lora_embeddings.append(dataset2weight[dataset])
+        if dataset not in dataset2weight[task]:
+            dataset = dataset.lower()
+        if dataset not in dataset2weight[task] and dataset == 'ace05':
+            dataset = 'ace'
+        assert dataset in dataset2weight[task], 'No weight found for {}\n existing datasets are {}'.format(dataset, dataset2weight[task].keys())
+        lora_embeddings.append(dataset2weight[task][dataset])
     lora_embeddings = torch.cat(lora_embeddings, dim=0).cpu().float().numpy()
     print('Lora embeddings shape', lora_embeddings.shape)
 
-    generate_lora_cluster_embeddings('NER', lora_embeddings, dataset2id, target_dir, zero_center=True, normalize=False)
+    generate_lora_cluster_embeddings(lora_embeddings, dataset2id, target_dir, zero_center=True, normalize=False)
     

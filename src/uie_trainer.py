@@ -365,7 +365,7 @@ class UIETrainer(Seq2SeqTrainer):
 
                 if self.args.local_rank == 0:
                     predict_metrics = predict_results.metrics
-                    output_path = os.path.join(self.args.output_dir, f"test_metrics_each_epoch.jsonl")
+                    output_path = os.path.join(self.args.output_dir, f"test_metrics_each_epoch_{self.args.max_num_instances_per_predict_task}.jsonl")
                     predict_metrics['epoch'] = epoch
                     if epoch <= 1 and self.args.evaluation_strategy == IntervalStrategy.EPOCH:
                         f = open(output_path, "w")

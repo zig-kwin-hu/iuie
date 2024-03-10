@@ -18,7 +18,7 @@ port=$(shuf -i25000-30000 -n1)
 expert_num=8
 lora_r=16
 lora_alpha=16 # should * power(r, 0.5) based on the discovery from rs lora.
-add_name=True
+add_name=False
 moe_topk=2
 moe_lora=True
 gate_type=TopKGate
@@ -28,15 +28,15 @@ gate_loss_weight=1e-2
 add_noise=True
 regularized=False
 with_universal=False
-use_cluster_embedding_for_gate=False
+use_cluster_embedding_for_gate=True
 #cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/re/cluster_embeddings_random_4096_8.npy
 #cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/re/cluster_uid2index_random_4096_8.json
-cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_uid2index_lora_True_False_65536_21_None.json
-cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_embeddings_lora_True_False_65536_21_None.npy
+cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/multi_task/cluster_uid2index_lora_True_False_65536_35_None.json
+cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/multi_task/cluster_embeddings_lora_True_False_65536_35_None.npy
 #before_moe_lora_gate_embedding_reduction=65536
 #before_moe_lora_gate_embedding_reduction=4096
 before_moe_lora_gate_embedding_reduction=-1
-gate_embedding_dim=4096
+gate_embedding_dim=65536
 if [[ "${use_cluster_embedding_for_gate}" == "True" ]]; then
     cluster_short_name=$(echo "$cluster_embedding_path" | awk -F'/' '{print $NF}' | awk -F'.npy' '{print $1}')
 else
@@ -93,9 +93,9 @@ do
         --min_positive_labels -1 \
         --output_dir "${output_dir}" \
         --input_record_file iuie.record \
-        --per_device_train_batch_size 6 \
+        --per_device_train_batch_size 5 \
         --per_device_eval_batch_size 32 \
-        --gradient_accumulation_steps 5 \
+        --gradient_accumulation_steps 6 \
         --learning_rate 5e-05 \
         --num_train_epochs 10 \
         --run_name ${model_name_or_path}-${TASK_CONFIG}-${DATASET_CONFIG} \
