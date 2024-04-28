@@ -17,7 +17,7 @@ port=$(shuf -i25000-30000 -n1)
 #model_name_or_path=ZWK/InstructUIE
 expert_num=8
 lora_r=16
-lora_alpha=16 # should * power(r, 0.5) based on the discovery from rs lora. still set as 16
+lora_alpha=16 # should * power(r, 0.5) based on the discovery from rs lora.
 add_name=True
 moe_topk=2
 moe_lora=True
@@ -28,13 +28,15 @@ gate_loss_weight=1e-2
 add_noise=True
 regularized=False
 with_universal=False
-use_cluster_embedding_for_gate=False
+use_cluster_embedding_for_gate=True
 #cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/re/cluster_embeddings_random_4096_8.npy
 #cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/re/cluster_uid2index_random_4096_8.json
-cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_uid2index_lora_True_False_65536_21_None.json
-cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_embeddings_lora_True_False_65536_21_None.npy
-
-gate_embedding_dim=4096
+cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/multi_task/cluster_uid2index_lora_True_False_65536_35_None.json
+cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/multi_task/cluster_embeddings_lora_True_False_65536_35_None.npy
+#before_moe_lora_gate_embedding_reduction=65536
+#before_moe_lora_gate_embedding_reduction=4096
+before_moe_lora_gate_embedding_reduction=-1
+gate_embedding_dim=65536
 if [[ "${use_cluster_embedding_for_gate}" == "True" ]]; then
     cluster_short_name=$(echo "$cluster_embedding_path" | awk -F'/' '{print $NF}' | awk -F'.npy' '{print $1}')
 else
@@ -145,7 +147,7 @@ do
         --use_cluster_embedding_for_gate ${use_cluster_embedding_for_gate} \
         --cluster_embedding_path ${cluster_embedding_path} \
         --cluster_uid2index_path ${cluster_uid2index_path} \
-        --resume_from_checkpoint /home/zkhu143/iuie/output_ssd2/multi_task_moelora/all/no_cluster_embedding_for_gate/InstructUIE_addname_16_TopKGate_8_2_router_z_True_False_False_False/checkpoint-400 \
+        --resume_from_checkpoint /home/zkhu143/iuie/output_ssd2/multi_task_moelora/all/cluster_embeddings_lora_True_False_65536_35_None/InstructUIE_addname_16_TopKGate_8_2_router_z_True_False_False_False/checkpoint-1800 \
         #--evaluation_strategy epoch \
         #--save_strategy epoch \
         #--evaluation_strategy epoch \

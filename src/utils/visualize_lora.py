@@ -67,6 +67,16 @@ def flatten_weights(weights):
         flat_weight = torch.cat(flat_weight, dim=0).reshape(1, -1)
         weight['flat_weight'] = flat_weight
     return weights
+def transform_weights(weights, zero_center=True, unit_variance=True):
+    all_weights = [weight['flat_weight'] for weight in weights]
+    all_weights = torch.cat(all_weights, dim=0)
+    if zero_center:
+        all_weights = all_weights - all_weights.mean(dim=0)
+    if unit_variance:
+        all_weights = all_weights / all_weights.std(dim=0)
+    for i, weight in enumerate(weights):
+        weight['flat_weight'] = all_weights[i]
+    return weights
 def tsne(weights):
     all_weights = [weight['flat_weight'].float().cpu().numpy() for weight in weights]
     all_weights = np.concatenate(all_weights, axis=0)
@@ -100,8 +110,8 @@ if __name__ == '__main__':
     layers = [23]
     modules = ['q']#['q','v']
     AorB = ['A']#['A','B']
-    encordec = ['encoder']#['encoder', 'decoder']
-    selforcross = ['SelfAttention']#['SelfAttention', 'EncDecAttention']
+    encordec = ['decoder']#['encoder', 'decoder']
+    selforcross = ['EncDecAttention']#['SelfAttention', 'EncDecAttention']
     combinations = generate_combinations(layers, modules, AorB, encordec, selforcross)
     for combination in combinations:
         print(combination)
@@ -109,6 +119,7 @@ if __name__ == '__main__':
             continue
         all_weights = load_all_weights(weights_path, device, layer=combination[0], module=combination[1], AorB=combination[2], encordec=combination[3], selforcross=combination[4])
         all_weights = flatten_weights(all_weights)
+        all_weights = transform_weights(all_weights, zero_center=True, unit_variance=True)
         all_weights = tsne(all_weights)
         #get upperbound and lowerbound of the tsne coordinates
         minx = min([weight['tsne'][0] for weight in all_weights])

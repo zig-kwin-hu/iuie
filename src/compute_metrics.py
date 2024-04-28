@@ -141,7 +141,7 @@ def compute_f1(dataset, predictions):
     scores = []
     for task_name, eval_dict in task_dict.items():
         for dataset_name, evaluator in eval_dict.items():
-            metrics[f"F1_for_{dataset_name}"] = evaluator.get_metric()
+            metrics[f"F1_for_{dataset_name}_{task_name}"] = evaluator.get_metric()
             scores.append(evaluator.get_metric())
             
     metrics['f1'] = sum(scores)/len(scores)

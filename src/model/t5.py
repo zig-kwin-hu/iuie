@@ -291,8 +291,12 @@ class T5DenseActDense(nn.Module):
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
-    def forward(self, hidden_states):
-        hidden_states = self.wi(hidden_states)
+    def forward(self, hidden_states, embedding_for_gate=None):
+        wi, wo = None, None
+        if isinstance(self.wi, MOELinear) or isinstance(self.wi, MOELinearWithUniversal):
+            hidden_states, gate_output_wi = self.wi(hidden_states, embedding_for_gate=embedding_for_gate)
+        else:
+            hidden_states = self.wi(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.dropout(hidden_states)
         if (
@@ -301,8 +305,12 @@ class T5DenseActDense(nn.Module):
             and self.wo.weight.dtype != torch.int8
         ):
             hidden_states = hidden_states.to(self.wo.weight.dtype)
-        hidden_states = self.wo(hidden_states)
-        return hidden_states
+        if isinstance(self.wo, MOELinear) or isinstance(self.wo, MOELinearWithUniversal):
+            hidden_states, gate_output_wo = self.wo(hidden_states, embedding_for_gate=embedding_for_gate)
+        else:
+            hidden_states = self.wo(hidden_states)
+        gate_outputs = {"wi": gate_output_wi, "wo": gate_output_wo}
+        return hidden_states, gate_outputs
 
 
 class T5DenseGatedActDense(nn.Module):
@@ -314,11 +322,26 @@ class T5DenseGatedActDense(nn.Module):
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
-    def forward(self, hidden_states):
-        hidden_gelu = self.act(self.wi_0(hidden_states))
-        hidden_linear = self.wi_1(hidden_states)
+    def forward(self, hidden_states, embedding_for_gate=None):
+        gate_output_wi_0, gate_output_wi_1, gate_output_wo = None, None, None
+        if isinstance(self.wi_0, MOELinear) or isinstance(self.wi_1, MOELinearWithUniversal):
+            wi_0_output, gate_output_wi_0 = self.wi_0(hidden_states, embedding_for_gate=embedding_for_gate)
+            hidden_gelu = self.act(wi_0_output)
+        else:
+            hidden_gelu = self.act(self.wi_0(hidden_states))
+        if isinstance(self.wi_1, MOELinear) or isinstance(self.wi_1, MOELinearWithUniversal):
+            hidden_linear, gate_output_wi_1 = self.wi_1(hidden_states, embedding_for_gate=embedding_for_gate)
+        else:
+            hidden_linear = self.wi_1(hidden_states)
         hidden_states = hidden_gelu * hidden_linear
         hidden_states = self.dropout(hidden_states)
+        # the value of hidden_states here or hidden gelu here can be view as the assigned attention score for the weight in wo
+        # hidden_states[batch_index][i] is the attention score for wo[i][:] in the batch_index-th sample
+        # need to check the distribution of such attention score w/ or w/o guideline and demonstration in the input prompt.
+        # the compare the distribtion, can ount the variance of this attention score under different guideline (w/ or w/o dataset-specific information)
+        # also can compare the average the hidden states under the same guideline and the same task, them compare different tasks' average attention scores, check whether the differences get larger w/ dataset-specific information
+        # the difference can be checked by tsne of average attention scores, or the variance of the same dimension across all tasks' average attention scoresieie
+
 
         # To make 8bit quantization work for google/flan-t5-xxl, self.wo is kept in float32.
         # See https://github.com/huggingface/transformers/issues/20287
@@ -329,9 +352,12 @@ class T5DenseGatedActDense(nn.Module):
             and self.wo.weight.dtype != torch.int8
         ):
             hidden_states = hidden_states.to(self.wo.weight.dtype)
-
-        hidden_states = self.wo(hidden_states)
-        return hidden_states
+        if isinstance(self.wo, MOELinear) or isinstance(self.wo, MOELinearWithUniversal):
+            hidden_states, gate_output_wo = self.wo(hidden_states, embedding_for_gate=embedding_for_gate)
+        else:
+            hidden_states = self.wo(hidden_states)
+        gate_outputs = {"wi_0": gate_output_wi_0, "wi_1": gate_output_wi_1, "wo": gate_output_wo}
+        return hidden_states, gate_outputs
 
 
 class T5LayerFF(nn.Module):
@@ -345,11 +371,12 @@ class T5LayerFF(nn.Module):
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, embedding_for_gate=None):
         forwarded_states = self.layer_norm(hidden_states)
-        forwarded_states = self.DenseReluDense(forwarded_states)
+        embedding_for_gate_expanded = embedding_for_gate.unsqueeze(1).expand(-1, hidden_states.shape[1], -1) if embedding_for_gate is not None else None
+        forwarded_states, gate_outputs = self.DenseReluDense(forwarded_states, embedding_for_gate=embedding_for_gate_expanded)
         hidden_states = hidden_states + self.dropout(forwarded_states)
-        return hidden_states
+        return hidden_states, gate_outputs
 
 
 class T5Attention(nn.Module):
@@ -533,7 +560,7 @@ class T5Attention(nn.Module):
                     # (batch_size, n_heads, seq_length, dim_per_head)
                     if ismoe:
                         embedding_for_gate_expanded = embedding_for_gate.unsqueeze(1).expand(-1, key_value_states.shape[1], -1) if embedding_for_gate is not None else None
-                        projected, gate_output = proj_layer(key_value_states, embedding_for_gate=embedding_for_gate)
+                        projected, gate_output = proj_layer(key_value_states, embedding_for_gate=embedding_for_gate_expanded)
                     else:
                         projected = proj_layer(key_value_states)
                     hidden_states = shape(projected)
@@ -548,6 +575,7 @@ class T5Attention(nn.Module):
             projected, gate_output_q = self.q(hidden_states, embedding_for_gate=embedding_for_gate_expanded)
         else:
             projected = self.q(hidden_states)
+            gate_output_q = None
         query_states = shape(projected) # (batch_size, n_heads, seq_length, dim_per_head)
         
         # get key/value states
@@ -730,7 +758,6 @@ class T5Block(nn.Module):
             cross_attn_past_key_value = past_key_value[2:]
         else:
             self_attn_past_key_value, cross_attn_past_key_value = None, None
-
         self_attention_outputs = self.layer[0](
             hidden_states,
             attention_mask=attention_mask,
@@ -776,7 +803,6 @@ class T5Block(nn.Module):
                 embedding_for_gate=embedding_for_gate,
             )
             hidden_states = cross_attention_outputs[0]
-
             # clamp inf values to enable fp16 training
             if hidden_states.dtype == torch.float16:
                 clamp_value = torch.where(
@@ -798,8 +824,7 @@ class T5Block(nn.Module):
             attention_outputs = attention_outputs[:-1] + cross_attention_outputs[2:-1] + attention_outputs[-1:] + cross_attention_outputs[-1:]
 
         # Apply Feed Forward layer
-        hidden_states = self.layer[-1](hidden_states)
-
+        hidden_states, gate_outputs_ff = self.layer[-1](hidden_states, embedding_for_gate=embedding_for_gate)
         # clamp inf values to enable fp16 training
         if hidden_states.dtype == torch.float16:
             clamp_value = torch.where(
@@ -812,9 +837,9 @@ class T5Block(nn.Module):
         outputs = (hidden_states,)
 
         if use_cache:
-            outputs = outputs + (present_key_value_state,) + attention_outputs
+            outputs = outputs + (present_key_value_state,) + attention_outputs + (gate_outputs_ff,)
         else:
-            outputs = outputs + attention_outputs
+            outputs = outputs + attention_outputs + (gate_outputs_ff,)
         #print('len(outputs)', len(outputs))
         #print('is_decoder', self.is_decoder)
         #print('encoder len(outputs)', '1/2 + 2/3')
@@ -822,7 +847,7 @@ class T5Block(nn.Module):
         #print(f"decoder len(outputs)", '5, 7 no use_cache', '5,6 no output_attentions', '8 use_cache and output_attentions')
         #print('t5.py line 798')
         #exit(0)
-        return outputs  # hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights), (self-attention gate_outputs), (cross-attention gate_outputs)
+        return outputs  # hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights), (self-attention gate_outputs), (cross-attention gate_outputs), (ff gate_outputs)
 
 
 class T5PreTrainedModel(PreTrainedModel):
@@ -1092,7 +1117,7 @@ class T5Stack(T5PreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
         all_cross_attentions = () if (output_attentions and self.is_decoder) else None
-        all_gate_outputs = {'self_attention': (), 'cross_attention': ()}
+        all_gate_outputs = {'self_attention': (), 'cross_attention': (), 'ff': ()}
         position_bias = None
         encoder_decoder_position_bias = None 
         
@@ -1161,17 +1186,20 @@ class T5Stack(T5PreTrainedModel):
                 )
 
             # layer_outputs is a tuple with:
-            # encoder hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights),  (self-attention gate_outputs)
-            #  decoder hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights), (self-attention gate_outputs), (cross-attention gate_outputs)
+            # encoder hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights),  (self-attention gate_outputs), (ff gate_outputs)
+            #  decoder hidden-states, present_key_value_states (optional), (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights), (self-attention gate_outputs), (cross-attention gate_outputs), (ff gate_outputs)
             if use_cache is False:
                 layer_outputs = layer_outputs[:1] + (None,) + layer_outputs[1:]
 
             hidden_states, present_key_value_state = layer_outputs[:2]
             if self.is_decoder and encoder_hidden_states is not None:
-                all_gate_outputs['self_attention'] += (layer_outputs[-2],)
-                all_gate_outputs['cross_attention'] += (layer_outputs[-1],)
+                all_gate_outputs['self_attention'] += (layer_outputs[-3],)
+                all_gate_outputs['cross_attention'] += (layer_outputs[-2],)
+                all_gate_outputs['ff'] += (layer_outputs[-1],)
             else:
-                all_gate_outputs['self_attention'] += (layer_outputs[-1],)
+                all_gate_outputs['self_attention'] += (layer_outputs[-2],)
+                all_gate_outputs['ff'] += (layer_outputs[-1],)
+
             
             # We share the position biases between the layers - the first layer store them
             # layer_outputs = hidden-states, key-value-states (self-attention position bias), (self-attention weights),
@@ -1896,42 +1924,43 @@ class MOET5ForConditionalGeneration(T5PreTrainedModel):
             gate_loss = 0
             gate_num = 0
             if encoder_gate_outputs is not None:
-                for tempi, gate_output in enumerate(encoder_gate_outputs['self_attention']):
-                    for module in ['q', 'k', 'v']:
-                        if gate_output[module] is None:
-                            continue
-                        gate_output[module]['loss'] = mean_ignoring_padding(gate_output[module]['loss'].to(attention_mask.device), attention_mask, ignore_index=0)
-                        top1_logits, top1_indices = torch.topk(gate_output[module]['scores'], 1, dim=-1)
-                        gate_num = gate_output[module]['scores'].shape[-1]
-                        top1_onehot_vectors = torch.nn.functional.one_hot(top1_indices.squeeze(-1), gate_num)
-                        
-                        gate_output[module]['top1_ratio'] = mean_ignoring_padding(top1_onehot_vectors.to(attention_mask.device), attention_mask, ignore_index=0, keepdim=True, keep_batch=True)
-                        gate_output[module]['scores'] = mean_ignoring_padding(gate_output[module]['scores'].to(attention_mask.device), attention_mask, ignore_index=0, keepdim=True, keep_batch=True)
+                for lora_part in ['self_attention', 'ff']:
+                    for tempi, gate_output in enumerate(encoder_gate_outputs[lora_part]):
+                        for module in ['q', 'k', 'v', 'wo', 'wi', 'wi_0', 'wi_1']:
+                            if module not in gate_output or gate_output[module] is None:
+                                continue
+                            gate_output[module]['loss'] = mean_ignoring_padding(gate_output[module]['loss'].to(attention_mask.device), attention_mask, ignore_index=0)
+                            top1_logits, top1_indices = torch.topk(gate_output[module]['scores'], 1, dim=-1)
+                            top1_onehot_vectors = torch.nn.functional.one_hot(top1_indices.squeeze(-1), gate_output[module]['scores'].shape[-1])
 
-                        #print(type(gate_output[module]['loss']), gate_output[module]['loss'].shape, gate_output[module]['loss'].dtype, gate_output[module]['loss'].device)
-                        #print(type(gate_output[module]['lora_scaling']))
-                        #print(gate_output[module]['lora_scaling'].shape, gate_output[module]['lora_scaling'].dtype, gate_output[module]['lora_scaling'].device)
-                        gate_loss = gate_loss + (gate_output[module]['loss']*gate_output[module]['lora_scaling'])
-                        gate_num += 1
+                            gate_output[module]['top1_ratio'] = mean_ignoring_padding(top1_onehot_vectors.to(attention_mask.device), attention_mask, ignore_index=0, keepdim=True, keep_batch=True)
+                            gate_output[module]['scores'] = mean_ignoring_padding(gate_output[module]['scores'].to(attention_mask.device), attention_mask, ignore_index=0, keepdim=True, keep_batch=True)
+
+                            #print(type(gate_output[module]['loss']), gate_output[module]['loss'].shape, gate_output[module]['loss'].dtype, gate_output[module]['loss'].device)
+                            #print(type(gate_output[module]['lora_scaling']))
+                            #print(gate_output[module]['lora_scaling'].shape, gate_output[module]['lora_scaling'].dtype, gate_output[module]['lora_scaling'].device)
+                            #gate_loss = gate_loss + (gate_output[module]['loss']*gate_output[module]['lora_scaling'])
+                            gate_loss = gate_loss + gate_output[module]['loss']
+                            gate_num += 1
                 assert len(encoder_gate_outputs['cross_attention'])==0, "encoder's cross_attention q should be None"
             
             assert len(decoder_gate_outputs['self_attention'])==len(decoder_gate_outputs['cross_attention']), "decoder's self_attention and cross_attention should have same length"
-            for attention_mode in ['self_attention', 'cross_attention']:
-                for gate_output in decoder_gate_outputs[attention_mode]:
-                    for module in ['q', 'k', 'v']:
-                        if gate_output[module] is None:
+            for lora_part in ['self_attention', 'cross_attention', 'ff']:
+                for gate_output in decoder_gate_outputs[lora_part]:
+                    for module in ['q', 'k', 'v', 'wo', 'wi', 'wi_0', 'wi_1']:
+                        if module not in gate_output or gate_output[module] is None:
                             continue
-                        target_mask = attention_mask if (attention_mode == 'cross_attention' and module in ['k','v']) else labels
-                        mask_id = 0 if (attention_mode == 'cross_attention' and module in ['k','v']) else -100
-                        assert gate_output[module]['loss'].shape == target_mask.shape, "attention mode {}, module {} , gate_output[module]['loss'] shape {} should be same as target_mask shape {}".format(attention_mode, module, gate_output[module]['loss'].shape, target_mask.shape)
+                        target_mask = attention_mask if (lora_part == 'cross_attention' and module in ['k','v']) else labels
+                        mask_id = 0 if (lora_part == 'cross_attention' and module in ['k','v']) else -100
+                        assert gate_output[module]['loss'].shape == target_mask.shape, "lora part {}, module {} , gate_output[module]['loss'] shape {} should be same as target_mask shape {}".format(lora_part, module, gate_output[module]['loss'].shape, target_mask.shape)
                         gate_output[module]['loss'] = mean_ignoring_padding(gate_output[module]['loss'].to(target_mask.device), target_mask, ignore_index=mask_id)
                         top1_logits, top1_indices = torch.topk(gate_output[module]['scores'], 1, dim=-1)
-                        gate_num = gate_output[module]['scores'].shape[-1]
-                        top1_onehot_vectors = torch.nn.functional.one_hot(top1_indices.squeeze(-1), gate_num)
+                        top1_onehot_vectors = torch.nn.functional.one_hot(top1_indices.squeeze(-1), gate_output[module]['scores'].shape[-1])
                         gate_output[module]['top1_ratio'] = mean_ignoring_padding(top1_onehot_vectors.to(target_mask.device), target_mask, ignore_index=mask_id, keepdim=True, keep_batch=True)
                         gate_output[module]['scores'] = mean_ignoring_padding(gate_output[module]['scores'].to(target_mask.device), target_mask, ignore_index=mask_id, keepdim=True, keep_batch=True)
                         
-                        gate_loss = gate_loss + (gate_output[module]['loss']*gate_output[module]['lora_scaling']).to(gate_loss.device)
+                        #gate_loss = gate_loss + (gate_output[module]['loss']*gate_output[module]['lora_scaling']).to(gate_loss.device)
+                        gate_loss = gate_loss + gate_output[module]['loss'].to(gate_loss.device)
                         gate_num += 1
             gate_loss = gate_loss/gate_num
             

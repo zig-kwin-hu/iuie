@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import random
-
+import IPython
 class MetricBase:
     def __init__(self):
         raise NotImplementedError()
@@ -459,6 +459,7 @@ class EvaluatorBase:
         
         # add single case
         y_truth, y_pred = self._extract(json_data, predict)
+        # y_truth and y_pred might be {"none"} or {"na"} or {"no_relation"} or {"[]"}
         self.metric.update(y_truth, y_pred)
 
         # audit
@@ -590,6 +591,9 @@ class EvaluatorNER(EvaluatorBase):
             # 部分地名可能会包含逗号，因此这里不检查逗号个数
             ent = self._format(ent)
             entity_pred.add(ent)
+        #remove none None NA na no_relation
+        entity_truth = set({i for i in entity_truth if i not in {'none', 'na', 'no_relation', '[]'}})
+        entity_pred = set({i for i in entity_pred if i not in {'none', 'na', 'no_relation', '[]'}})
         return entity_truth, entity_pred
 
 class EvaluatorRE(EvaluatorBase):

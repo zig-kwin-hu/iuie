@@ -119,7 +119,7 @@ def compare_unevenness(dataset2gate_record, common_attributes, compared_attribut
         for value in compare_count[attribute]:
             average_unevenness = compare_count[attribute][value]['sum']/(compare_count[attribute][value]['count']+1e-4)
             compare_count[attribute][value]['average_unevenness'] = average_unevenness
-            print('value:', value, 'average unevenness:', round(average_unevenness,4))
+            print('attribute', attribute, 'value:', value, 'average unevenness:', round(average_unevenness,4))
         print('common average', np.mean([compare_count[attribute][value]['average_unevenness'] for value in compare_count[attribute]]))
                         
 if __name__ == '__main__':

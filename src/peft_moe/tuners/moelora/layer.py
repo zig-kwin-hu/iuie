@@ -332,7 +332,7 @@ class MOELinear(nn.Linear, MOELoraLayer):
     def _linear(self, input: torch.Tensor) -> torch.Tensor:
         return F.linear(input, transpose(self.weight, self.fan_in_fan_out), bias=self.bias)
 
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, dict]:
         previous_dtype = x.dtype
         embedding_for_gate = kwargs.get("embedding_for_gate", None)
         if self.disable_adapters:
@@ -364,6 +364,7 @@ class MOELinear(nn.Linear, MOELoraLayer):
                 result += weighted_moe_output * scaling
                 gate_output['lora_scaling'] = scaling
         result = result.to(previous_dtype)
+        #{'logits': logits, 'scores': scores_filtered, 'loss':loss, 'lora_scaling': scaling}
         return result, gate_output
 
 class MOELinearWithUniversal(nn.Linear, MOELoraLayer):

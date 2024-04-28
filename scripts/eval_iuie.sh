@@ -5,7 +5,7 @@ epoch_map=([with_sentence_iuie_mean_of_encoder]=30 [NYT11_NYT]=10 [semval-RE]=10
 # declare -A TASK2DATASETS=([re]="conll04 SciERC NYT11 semval-RE ADE_corpus-1500" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="CoNLL_2003 ACE_2004 ACE_2005")
 # DONE : [ner] = ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7_sample_15000 WikiANN_en WikiNeural
 #declare -A TASK2DATASETS=([re]="ADE_corpus NYT11_sample_30000 New-York-Times-RE_sample_30000 semval-RE conll04 GIDS SciERC kbp37" [eet]="ace phee casie" [eea]="ace phee casie" [ner]="ACE_2004 ACE_2005 AnatEM bc2gm bc4chemd bc5cdr Broad_Tweet_Corpus CoNLL_2003 FabNER FindVehicle GENIA_NER HarveyNER mit-movie mit-restaurant MultiNERD ncbi Ontonotes_sample_30000 PolyglotNER TweetNER7 WikiANN_en WikiNeural")
-declare -A TASK2DATASETS=([multi_task]="all" [ner]="plo_all" [re]="all" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
+declare -A TASK2DATASETS=([multi_task]="all" [ner]="Broad_Tweet_Corpus" [re]="all" [with_sentence_iuie_mean_of_encoder]="0_2" [ner_cluster]="ACE_2004_ACE_2005" [re_cluster]="NYT11_NYT" [eet]="ace phee casie" [eea]="ace phee casie")
 
 set -x
 
@@ -18,7 +18,7 @@ port=$(shuf -i25000-30000 -n1)
 expert_num=8
 lora_r=16
 lora_alpha=16 # should * power(r, 0.5) based on the discovery from rs lora.
-add_name=False
+add_name=True
 moe_topk=2
 moe_lora=True
 gate_type=TopKGate
@@ -31,8 +31,10 @@ with_universal=False
 use_cluster_embedding_for_gate=False
 #cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/re/cluster_embeddings_random_4096_8.npy
 #cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/re/cluster_uid2index_random_4096_8.json
-cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_uid2index_lora_True_False_65536_21_None.json
-cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_embeddings_lora_True_False_65536_21_None.npy
+#cluster_uid2index_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_uid2index_lora_True_False_65536_21_None.json
+#cluster_embedding_path=data/ie_instruct_unique_id/cluster_embeddings/ner/cluster_embeddings_lora_True_False_65536_21_None.npy
+cluster_embedding_path=/home/zkhu143/iuie/data/ie_instruct_unique_id/cluster_embeddings/multi_task/cluster_embeddings_lora_True_False_65536_35_None.npy
+cluster_uid2index_path=/home/zkhu143/iuie/data/ie_instruct_unique_id/cluster_embeddings/multi_task/cluster_uid2index_lora_True_False_65536_35_None.json
 #before_moe_lora_gate_embedding_reduction=65536
 #before_moe_lora_gate_embedding_reduction=4096
 before_moe_lora_gate_embedding_reduction=-1

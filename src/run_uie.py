@@ -119,9 +119,9 @@ def print_number_of_trainable_model_parameters(model):
             trainable_params += num_params
 
     return f"trainable model parameters: {trainable_params}\nall model parameters: {all_param}\npercentage of trainable model parameters: {100 * trainable_params / all_param:.2f}%"
-def merge_embeddings(uid2index, embeddings, datasets):
+def merge_embeddings(uid2index, embeddings, all_datasets):
     necessary_index = set()
-    for dataset in datasets:
+    for dataset in all_datasets:
         for example in dataset:
             uid = example['Instance']['unique_id']
             index = uid2index[uid]
@@ -132,7 +132,7 @@ def merge_embeddings(uid2index, embeddings, datasets):
     new_embeddings = embeddings[necessary_index]
     
     new_uid2index = {}#uid: index2newindex[uid2index[uid]] for uid in uid2index}
-    for dataset in datasets:
+    for dataset in all_datasets:
         for example in dataset:
             uid = example['Instance']['unique_id']
             index = uid2index[uid]
@@ -539,6 +539,8 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     assert model_args.moe_lora or not training_args.write_gate_loads, "write_gate_loads only support moe lora"
+    assert model_args.moe_lora or not training_args.use_cluster_embedding_for_gate, "use_cluster_embedding_for_gate only support moe lora"
+
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -881,7 +883,14 @@ def main():
         cluster_embeddings_for_gate = np.load(training_args.cluster_embedding_path)
         cluster_embeddings_for_gate = torch.nn.Parameter(torch.tensor(cluster_embeddings_for_gate, dtype=torch.float32), requires_grad=False)
         print('before merging embeddings', cluster_embeddings_for_gate.shape, len(uid2clusterid))
-        uid2clusterid, cluster_embeddings_for_gate = merge_embeddings(uid2clusterid, cluster_embeddings_for_gate, [train_dataset, eval_dataset, predict_dataset])
+        all_datasets = []
+        if training_args.do_train:
+            all_datasets.append(train_dataset)
+        if training_args.do_eval:
+            all_datasets.append(eval_dataset)
+        if training_args.do_predict:
+            all_datasets.append(predict_dataset)
+        uid2clusterid, cluster_embeddings_for_gate = merge_embeddings(uid2clusterid, cluster_embeddings_for_gate, all_datasets)
         print('after merging embeddings', cluster_embeddings_for_gate.shape, len(uid2clusterid))
     if training_args.use_sentence_embedding_for_gate:
         uid2sentid = json.load(open(training_args.sentence_uid2index_path))

@@ -793,8 +793,7 @@ class UIETrainer(Seq2SeqTrainer):
             embedding_for_gate = sentence_embedding_for_gate
         elif cluster_embedding_for_gate is not None and self.args.use_cluster_embedding_for_gate:
             embedding_for_gate = cluster_embedding_for_gate
-        before_moe_lora_gate_embedding_reduction = getattr(self.model, "before_moe_lora_gate_embedding_reduction")
-        assert before_moe_lora_gate_embedding_reduction is not None
+        before_moe_lora_gate_embedding_reduction = getattr(self.model, "before_moe_lora_gate_embedding_reduction", None)
         if before_moe_lora_gate_embedding_reduction is not None and before_moe_lora_gate_embedding_reduction > 0 and embedding_for_gate is not None:
             embedding_for_gate = model.moe_lora_gate_embedding_reduction.to(embedding_for_gate.dtype)(embedding_for_gate)
             embedding_for_gate = model.moe_lora_gate_embedding_reduction_dropout(embedding_for_gate)
@@ -837,7 +836,6 @@ class UIETrainer(Seq2SeqTrainer):
                     before_moe_lora_gate_embedding_reduction = getattr(model, 'before_moe_lora_gate_embedding_reduction', None)
                     if before_moe_lora_gate_embedding_reduction is None:
                         before_moe_lora_gate_embedding_reduction = getattr(model.base_model, 'moe_lora_gate_embedding_reduction', None)
-                    assert before_moe_lora_gate_embedding_reduction is not None
                     if before_moe_lora_gate_embedding_reduction is not None and before_moe_lora_gate_embedding_reduction>0 and\
                         'embedding_for_gate' in inputs and inputs['embedding_for_gate'] is not None:
                         #model.moe_lora_gate_embedding_reduction.weight.dtype bfloat16, inputs['embedding_for_gate'].dtype float32
@@ -853,12 +851,13 @@ class UIETrainer(Seq2SeqTrainer):
                     if self.args.write_gate_loads:
                         
                         fout = open(os.path.join(self.args.output_dir, 'gate_loads.jsonl'),'a+')
-                        encoder_gate_loads = self.record_gate_loads(outputs.encoder_gate_outputs['self_attention'], attention_mode='self_attention',
-                             stack_mode='encoder', unique_ids=unique_ids)
-                        for encoder_gate_load in encoder_gate_loads:
-                            fout.write(json.dumps(encoder_gate_load)+'\n')
-                        for mode in ['self_attention','cross_attention']:
-                            decoder_gate_loads = self.record_gate_loads(outputs.decoder_gate_outputs[mode], attention_mode=mode,
+                        for mode in ['self_attention','ff']:
+                            encoder_gate_loads = self.record_gate_loads(outputs.encoder_gate_outputs[mode], lora_part=mode,
+                                 stack_mode='encoder', unique_ids=unique_ids)
+                            for encoder_gate_load in encoder_gate_loads:
+                                fout.write(json.dumps(encoder_gate_load)+'\n')
+                        for mode in ['self_attention','cross_attention','ff']:
+                            decoder_gate_loads = self.record_gate_loads(outputs.decoder_gate_outputs[mode], lora_part=mode,
                              stack_mode='decoder', unique_ids=unique_ids)
                             for decoder_gate_load in decoder_gate_loads:
                                 fout.write(json.dumps(decoder_gate_load)+'\n')
@@ -1234,7 +1233,7 @@ class UIETrainer(Seq2SeqTrainer):
             inputs['embedding_for_gate'] = cluster_embedding_for_gate
         unique_ids = inputs.pop('unique_ids',None)
         
-        before_moe_lora_gate_embedding_reduction = getattr(model, 'before_moe_lora_gate_embedding_reduction')        
+        before_moe_lora_gate_embedding_reduction = getattr(model, 'before_moe_lora_gate_embedding_reduction', None)        
         if before_moe_lora_gate_embedding_reduction is not None and before_moe_lora_gate_embedding_reduction>0 and\
               'embedding_for_gate' in inputs and inputs['embedding_for_gate'] is not None:
             #model.moe_lora_gate_embedding_reduction.weight.dtype bfloat16, inputs['embedding_for_gate'].dtype float32
@@ -1245,12 +1244,13 @@ class UIETrainer(Seq2SeqTrainer):
         outputs = model(**inputs)
         if self.args.write_gate_loads:
             fout = open(os.path.join(self.args.output_dir, 'gate_loads.jsonl'),'a+')
-            encoder_gate_loads = self.record_gate_loads(outputs.encoder_gate_outputs['self_attention'], attention_mode='self_attention',
-                 stack_mode='encoder', unique_ids=unique_ids)
-            for encoder_gate_load in encoder_gate_loads:
-                fout.write(json.dumps(encoder_gate_load)+'\n')
-            for mode in ['self_attention','cross_attention']:
-                decoder_gate_loads = self.record_gate_loads(outputs.decoder_gate_outputs[mode], attention_mode=mode,
+            for mode in ['self_attention','ff']:
+                encoder_gate_loads = self.record_gate_loads(outputs.encoder_gate_outputs[mode], lora_part=mode,
+                    stack_mode='encoder', unique_ids=unique_ids)
+                for encoder_gate_load in encoder_gate_loads:
+                    fout.write(json.dumps(encoder_gate_load)+'\n')
+            for mode in ['self_attention','cross_attention', 'ff']:
+                decoder_gate_loads = self.record_gate_loads(outputs.decoder_gate_outputs[mode], lora_part=mode,
                  stack_mode='decoder', unique_ids=unique_ids)
                 for decoder_gate_load in decoder_gate_loads:
                     fout.write(json.dumps(decoder_gate_load)+'\n')
@@ -1277,7 +1277,7 @@ class UIETrainer(Seq2SeqTrainer):
             loss = loss + outputs['gate_loss']*self.args.gate_loss_weight
         return (loss, outputs) if return_outputs else loss
 
-    def record_gate_loads(self, gate_outputs, attention_mode, stack_mode, unique_ids, prefix=''):
+    def record_gate_loads(self, gate_outputs, lora_part, stack_mode, unique_ids, prefix=''):
         records = []
         def recursive_round(element, decimal):
             if isinstance(element, list):
@@ -1288,8 +1288,8 @@ class UIETrainer(Seq2SeqTrainer):
             #Futural update: given a model, you could not know the target lora/moe_lora module names. 
             #So you need to dynamically select possible modules based on the model_name which can be retrieved from the model's config.
             gate_load = {}
-            for module in ['q','k','v']:
-                if gate_output[module] is None or 'top1_ratio' not in gate_output[module]:
+            for module in ['q','k','v', 'wi_0','wi_1','wi','wo']:
+                if (module not in gate_output) or (gate_output[module] is None) or ('top1_ratio' not in gate_output[module]):
                     gate_load[module] = None
                     continue
                 gate_load[module] = {}
@@ -1299,11 +1299,11 @@ class UIETrainer(Seq2SeqTrainer):
                 assert len(gate_load[module]['top1_ratio']) == len(unique_ids)
             for index, unique_id in enumerate(unique_ids):
                 gate_load_i = copy.deepcopy(gate_load)
-                for module in ['q','k','v']:
-                    if gate_load_i[module] is not None:
+                for module in ['q','k','v', 'wi_0','wi_1','wi','wo']:
+                    if module in gate_load_i and gate_load_i[module] is not None:
                         gate_load_i[module]['top1_ratio'] = gate_load_i[module]['top1_ratio'][index]
                         gate_load_i[module]['scores'] = gate_load_i[module]['scores'][index]
-                record = {'attention_mode':attention_mode, 'stack_mode':stack_mode, 'unique_id':unique_id, 'gate_load':gate_load_i, 'layer_index':layer_index}
+                record = {'lora_part':lora_part, 'stack_mode':stack_mode, 'unique_id':unique_id, 'gate_load':gate_load_i, 'layer_index':layer_index}
                 records.append(record)
         return records
         
